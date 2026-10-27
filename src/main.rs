@@ -47,8 +47,9 @@ struct Bank {
 }
 
 impl Bank {
-    fn load() -> Bank {
-        let raw: Value = serde_json::from_str(QUIZ_JSON).expect("questions.json 解析失败");
+    fn load(quiz_path: &Option<PathBuf>) -> Bank {
+        let json_str = read_quiz_json(quiz_path);
+        let raw: Value = serde_json::from_str(&json_str).expect("questions.json 解析失败");
         let subjects = raw["subjects"]
             .as_array()
             .map(|a| {
@@ -118,9 +119,35 @@ impl Bank {
     }
 }
 
+// 运行时加载题库：--questions 显式路径 → env QUIZ_JSON_PATH → ./questions.json
+// → ~/.shuati-webui-rust/questions.json → 内嵌 QUIZ_JSON（兜底）
+fn read_quiz_json(explicit: &Option<PathBuf>) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Some(p) = explicit {
+        cands.push(p.clone());
+    }
+    if let Ok(p) = std::env::var("QUIZ_JSON_PATH") {
+        cands.push(PathBuf::from(p));
+    }
+    cands.push(PathBuf::from("./questions.json"));
+    cands.push(PathBuf::from(&home).join(".shuati-webui-rust/questions.json"));
+    for p in &cands {
+        if p.exists() {
+            if let Ok(s) = std::fs::read_to_string(p) {
+                eprintln!("题库从文件加载: {} ({} 字符)", p.display(), s.len());
+                return s;
+            }
+        }
+    }
+    eprintln!("题库文件未找到，使用内嵌题库");
+    QUIZ_JSON.to_string()
+}
+
 fn main() {
     let mut port: u16 = 8085;
     let mut bind: String = "0.0.0.0".to_string();
+    let mut quiz_path: Option<PathBuf> = None;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
@@ -133,11 +160,16 @@ fn main() {
                 bind = args[i + 1].clone();
                 i += 2;
             }
+            "--questions" if i + 1 < args.len() => {
+                quiz_path = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
             "-h" | "--help" => {
                 println!(
                     "shuati-webui-rust — 国考刷题网页 (行测/申论/计算机岗)\n \
-                     --port <N>   listen port (default 8085)\n \
-                     --bind <IP>  bind address (default 0.0.0.0)"
+                     --port <N>       listen port (default 8085)\n \
+                     --bind <IP>      bind address (default 0.0.0.0)\n \
+                     --questions <F>  题库 JSON 路径（默认 ./questions.json / ~/.shuati-webui-rust/questions.json / 内嵌）"
                 );
                 return;
             }
@@ -152,7 +184,7 @@ fn main() {
     let stats_path = dir.join("stats.json");
     let stats = Arc::new(Mutex::new(load_stats(&stats_path)));
 
-    let bank = Arc::new(Bank::load());
+    let bank = Arc::new(Bank::load(&quiz_path));
     let server = Server::http((bind.as_str(), port)).expect("绑定端口失败");
     println!("shuati-webui 已启动 http://{bind}:{port}  (题目 {} 道)",
         bank.questions.len());
