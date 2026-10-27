@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tiny_http::{Header, Method, Response, Server};
+use tiny_http::{Header, Response, Server};
 
 const QUIZ_JSON: &str = include_str!("../web/questions.json");
 const INDEX_HTML: &str = include_str!("../web/index.html");
@@ -152,6 +152,7 @@ fn main() {
     let stats_path = dir.join("stats.json");
     let stats = Arc::new(Mutex::new(load_stats(&stats_path)));
 
+    let bank = Arc::new(Bank::load());
     let server = Server::http((bind.as_str(), port)).expect("绑定端口失败");
     println!("shuati-webui 已启动 http://{bind}:{port}  (题目 {} 道)",
         bank.questions.len());
@@ -213,7 +214,7 @@ fn handle(
         (_, "/") => { let _ = request.respond(text_response(200, "text/html; charset=utf-8", INDEX_HTML.to_string())); }
         (_, "/app.js") => { let _ = request.respond(text_response(200, "application/javascript; charset=utf-8", APP_JS.to_string())); }
         (_, "/style.css") => { let _ = request.respond(text_response(200, "text/css; charset=utf-8", STYLE_CSS.to_string())); }
-        (Method::Get, "/api/subjects") => {
+        ("GET", "/api/subjects") => {
             let subs: Vec<Value> = bank
                 .subjects
                 .iter()
@@ -226,7 +227,7 @@ fn handle(
                 .collect();
             let _ = request.respond(json_response(200, &json!({ "subjects": subs })));
         }
-        (Method::Get, "/api/stats") => {
+        ("GET", "/api/stats") => {
             let m = stats.lock().unwrap();
             let mut mods: Vec<Value> = m
                 .iter()
@@ -254,7 +255,7 @@ fn handle(
                 "total": total_t, "correct": total_c, "overall": overall,
             })));
         }
-        (Method::Get, "/api/questions") => {
+        ("GET", "/api/questions") => {
             let qs: Vec<Value> = request.url().split('?').nth(1)
                 .map(|q| {
                     q.split('&')
@@ -270,7 +271,7 @@ fn handle(
                 .unwrap_or_else(|| bank.public_questions("xingce"));
             let _ = request.respond(json_response(200, &json!({ "questions": qs })));
         }
-        (Method::Post, "/api/check") => {
+        ("POST", "/api/check") => {
             // body: {"answers":{"x01":"B",...,"s1":"<essay>"}}
             let mut body = String::new();
             let _ = request.as_reader().read_to_string(&mut body);
