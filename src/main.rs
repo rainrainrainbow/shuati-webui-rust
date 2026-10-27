@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Method, Response, Server};
 
 const QUIZ_JSON: &str = include_str!("../web/questions.json");
@@ -144,16 +145,45 @@ fn main() {
         }
     }
 
-    let bank = Arc::new(Bank::load());
+    // ---- 统计状态（按 subject|module 累计正确率，持久化到文件） ------------
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let dir = PathBuf::from(&home).join(".shuati-webui-rust");
+    let _ = std::fs::create_dir_all(&dir);
+    let stats_path = dir.join("stats.json");
+    let stats = Arc::new(Mutex::new(load_stats(&stats_path)));
+
     let server = Server::http((bind.as_str(), port)).expect("绑定端口失败");
     println!("shuati-webui 已启动 http://{bind}:{port}  (题目 {} 道)",
         bank.questions.len());
 
     for request in server.incoming_requests() {
         let bank = bank.clone();
+        let stats = stats.clone();
+        let stats_path = stats_path.clone();
         std::thread::spawn(move || {
-            let _ = handle(request, &bank);
+            let _ = handle(request, &bank, &stats, &stats_path);
         });
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+struct ModStat {
+    t: usize,
+    c: usize,
+}
+
+type StatsMap = HashMap<String, ModStat>;
+
+fn load_stats(path: &std::path::Path) -> StatsMap {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<StatsMap>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_stats(path: &std::path::Path, m: &StatsMap) {
+    if let Ok(s) = serde_json::to_string(m) {
+        let _ = std::fs::write(path, s);
     }
 }
 
@@ -169,7 +199,12 @@ fn json_response(code: u16, v: &Value) -> tiny_http::Response<std::io::Cursor<Ve
     text_response(code, "application/json; charset=utf-8", v.to_string())
 }
 
-fn handle(request: tiny_http::Request, bank: &Bank) {
+fn handle(
+    request: tiny_http::Request,
+    bank: &Bank,
+    stats: &Arc<Mutex<StatsMap>>,
+    stats_path: &std::path::Path,
+) {
     let method = request.method().clone();
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or("/").to_string();
@@ -190,6 +225,34 @@ fn handle(request: tiny_http::Request, bank: &Bank) {
                 })
                 .collect();
             let _ = request.respond(json_response(200, &json!({ "subjects": subs })));
+        }
+        (Method::Get, "/api/stats") => {
+            let m = stats.lock().unwrap();
+            let mut mods: Vec<Value> = m
+                .iter()
+                .filter(|(_, v)| v.t > 0)
+                .map(|(k, v)| {
+                    let mut it = k.split('|');
+                    let subject = it.next().unwrap_or("").to_string();
+                    let module = it.next().unwrap_or("").to_string();
+                    let pct = (v.c as f64 * 100.0 / v.t as f64 * 10.0).round() / 10.0;
+                    json!({
+                        "subject": subject, "module": module,
+                        "total": v.t, "correct": v.c, "pct": pct,
+                    })
+                })
+                .collect();
+            mods.sort_by(|a, b| a["pct"].as_f64().unwrap_or(0.0).partial_cmp(&b["pct"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+            let total_t: usize = m.values().map(|v| v.t).sum();
+            let total_c: usize = m.values().map(|v| v.c).sum();
+            let overall = if total_t > 0 {
+                (total_c as f64 * 100.0 / total_t as f64 * 10.0).round() / 10.0
+            } else { 0.0 };
+            let weak: Vec<Value> = mods.iter().take(3).cloned().collect();
+            let _ = request.respond(json_response(200, &json!({
+                "modules": mods, "weak": weak,
+                "total": total_t, "correct": total_c, "overall": overall,
+            })));
         }
         (Method::Get, "/api/questions") => {
             let qs: Vec<Value> = request.url().split('?').nth(1)
@@ -252,6 +315,26 @@ fn handle(request: tiny_http::Request, bank: &Bank) {
             } else {
                 0.0
             };
+            // ---- 记录成绩（按 subject|module）----
+            {
+                let mut m = stats.lock().unwrap();
+                for (qid, q) in &bank.by_id {
+                    if q.qtype == "essay" {
+                        continue;
+                    }
+                    let ans = answers.get(qid).and_then(|v| v.as_str()).unwrap_or("");
+                    let right = q.answer.to_uppercase();
+                    let your = ans.to_uppercase().replace([' ', ','], "");
+                    let ok = !your.is_empty() && your == right;
+                    let key = format!("{}|{}", q.subject, q.module);
+                    let e = m.entry(key).or_default();
+                    e.t += 1;
+                    if ok {
+                        e.c += 1;
+                    }
+                }
+                save_stats(stats_path, &m);
+            }
             let _ = request.respond(json_response(200, &json!({
                 "total": total, "objective_total": obj_total,
                 "objective_correct": obj_correct, "score": pct,
