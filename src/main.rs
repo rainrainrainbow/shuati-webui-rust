@@ -201,7 +201,7 @@ fn json_response(code: u16, v: &Value) -> tiny_http::Response<std::io::Cursor<Ve
 }
 
 fn handle(
-    request: tiny_http::Request,
+    mut request: tiny_http::Request,
     bank: &Bank,
     stats: &Arc<Mutex<StatsMap>>,
     stats_path: &std::path::Path,
