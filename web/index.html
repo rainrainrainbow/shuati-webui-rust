@@ -2,19 +2,29 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>国考刷题 · 行测/申论/计算机岗</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header>
-  <h1>国考刷题<span class="badge">行测 · 申论 · 计算机岗</span></h1>
-  <div class="subjects" id="subjects"></div>
-  <div class="statbar"><button class="statbtn" onclick="showStats()">📊 成绩分析</button></div>
+<header class="topbar">
+  <div class="title">国考刷题<small id="subname"></small></div>
+  <button class="statbtn" onclick="showStats()">📊 成绩</button>
 </header>
-<main id="quiz"><p class="hint">加载题库中…</p></main>
-<div id="statpanel" class="statpanel"></div>
+<div class="subjects" id="subjects"><p class="hint">加载题库中…</p></div>
+<main id="quiz"></main>
+<div id="answerSheet" class="sheetmask" onclick="if(event.target===this)closeSheet()">
+  <div class="sheet">
+    <div class="sheethead">答题卡 <span id="sheetcnt"></span>
+      <button class="closebtn" onclick="closeSheet()">✕</button></div>
+    <div id="sheetgrid" class="sheetgrid"></div>
+  </div>
+</div>
+<div id="statpanel" class="statmask" onclick="if(event.target===this)closeStats()">
+  <div class="statpanel"><button class="closebtn" onclick="closeStats()">✕</button><div id="statbody"></div></div>
+</div>
 <footer id="foot"></footer>
+<div id="toast" class="toast"></div>
 <script src="/app.js"></script>
 </body>
 </html>
