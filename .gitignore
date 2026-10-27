@@ -1,3 +1,4 @@
-/target
-shuati-webui-rust
-*.log
+data/
+*.zip
+shuati_artifact_dir/
+shuati_*.zip
