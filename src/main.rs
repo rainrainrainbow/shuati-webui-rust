@@ -169,15 +169,15 @@ fn json_response(code: u16, v: &Value) -> tiny_http::Response<std::io::Cursor<Ve
     text_response(code, "application/json; charset=utf-8", v.to_string())
 }
 
-fn handle(request: tiny_http::Request, bank: &Bank) -> std::io::Result<()> {
+fn handle(request: tiny_http::Request, bank: &Bank) {
     let method = request.method().clone();
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or("/").to_string();
 
-    match (method.as_ref(), path.as_str()) {
-        (_, "/") => request.respond(text_response(200, "text/html; charset=utf-8", INDEX_HTML.to_string()))?,
-        (_, "/app.js") => request.respond(text_response(200, "application/javascript; charset=utf-8", APP_JS.to_string()))?,
-        (_, "/style.css") => request.respond(text_response(200, "text/css; charset=utf-8", STYLE_CSS.to_string()))?,
+    match (method.as_str(), path.as_str()) {
+        (_, "/") => { let _ = request.respond(text_response(200, "text/html; charset=utf-8", INDEX_HTML.to_string())); }
+        (_, "/app.js") => { let _ = request.respond(text_response(200, "application/javascript; charset=utf-8", APP_JS.to_string())); }
+        (_, "/style.css") => { let _ = request.respond(text_response(200, "text/css; charset=utf-8", STYLE_CSS.to_string())); }
         (Method::Get, "/api/subjects") => {
             let subs: Vec<Value> = bank
                 .subjects
@@ -189,7 +189,7 @@ fn handle(request: tiny_http::Request, bank: &Bank) -> std::io::Result<()> {
                     })
                 })
                 .collect();
-            request.respond(json_response(200, &json!({ "subjects": subs })))
+            let _ = request.respond(json_response(200, &json!({ "subjects": subs })));
         }
         (Method::Get, "/api/questions") => {
             let qs: Vec<Value> = request.url().split('?').nth(1)
@@ -205,7 +205,7 @@ fn handle(request: tiny_http::Request, bank: &Bank) -> std::io::Result<()> {
                 .flatten()
                 .map(|s| bank.public_questions(s))
                 .unwrap_or_else(|| bank.public_questions("xingce"));
-            request.respond(json_response(200, &json!({ "questions": qs })))
+            let _ = request.respond(json_response(200, &json!({ "questions": qs })));
         }
         (Method::Post, "/api/check") => {
             // body: {"answers":{"x01":"B",...,"s1":"<essay>"}}
@@ -252,13 +252,12 @@ fn handle(request: tiny_http::Request, bank: &Bank) -> std::io::Result<()> {
             } else {
                 0.0
             };
-            request.respond(json_response(200, &json!({
+            let _ = request.respond(json_response(200, &json!({
                 "total": total, "objective_total": obj_total,
                 "objective_correct": obj_correct, "score": pct,
                 "results": results,
-            })))
+            })));
         }
-        _ => request.respond(text_response(404, "text/plain; charset=utf-8", "not found".to_string()))?,
+        _ => { let _ = request.respond(text_response(404, "text/plain; charset=utf-8", "not found".to_string())); }
     }
-    Ok(())
 }
