@@ -107,6 +107,46 @@ function render() {
   });
 }
 
+// 成绩分析：按模块正确率排行，定位薄弱项
+async function showStats() {
+  const panel = $('#statpanel');
+  panel.classList.toggle('open');
+  if (!panel.classList.contains('open')) return;
+  await renderStats();
+}
+
+async function renderStats() {
+  const panel = $('#statpanel');
+  const r = await fetch('/api/stats');
+  const d = await r.json();
+  if (!d.modules || d.modules.length === 0) {
+    panel.innerHTML = `<div class="statcard"><h3>📊 成绩分析</h3>
+      <p class="hint">还没有成绩记录。做几套题后，这里会按模块统计正确率，帮你定位薄弱项。</p></div>`;
+    return;
+  }
+  const subjName = {};
+  SUBJECTS.forEach(s => subjName[s.id] = s.name);
+  const rows = d.modules.map(m => {
+    const pct = m.pct;
+    const weak = pct < 60 ? 'weak' : '';
+    return `<div class="statrow">
+      <span class="mod">${esc(subjName[m.subject] || m.subject)} · ${esc(m.module)}</span>
+      <span class="bar"><i class="${weak}" style="width:${pct}%"></i></span>
+      <span class="pct">${pct}%</span>
+      <span class="d">${m.correct}/${m.total}</span></div>`;
+  }).join('');
+  const weakTxt = d.weak.map(w => `${subjName[w.subject] || w.subject}·${w.module}（${w.pct}%）`).join('、');
+  const advice = d.weak.length
+    ? `⚡ 备考建议：整体正确率 ${d.overall}%。最薄弱：${esc(weakTxt)}——建议先重点补强这几个模块，再做套题巩固。`
+    : `✅ 正确率不错（${d.overall}%），可进阶做套题/限时训练。`;
+  panel.innerHTML = `<div class="statcard">
+    <h3>📊 成绩分析 <span class="score .d">共答 ${d.total} 题 · 对 ${d.correct}</span></h3>
+    <div class="statoverall">${d.overall}%</div>
+    <div style="margin-top:12px">${rows}</div>
+    <div class="statadvice">${advice}</div>
+  </div>`;
+}
+
 function esc(s) {
   return String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
@@ -162,6 +202,10 @@ async function submit() {
   });
   // 滚动到分数
   sc.scrollIntoView({ behavior: 'smooth' });
+  // 若分析面板开着，自动刷新
+  if ($('#statpanel') && $('#statpanel').classList.contains('open')) {
+    renderStats();
+  }
 }
 
 loadSubjects();
