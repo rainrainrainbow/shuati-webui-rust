@@ -283,8 +283,12 @@ fn handle(
             let mut obj_correct = 0usize;
             let mut results = Vec::new();
 
-            for (qid, q) in &bank.by_id {
-                let ans = answers.get(qid).and_then(|v| v.as_str()).unwrap_or("");
+            for (qid, ans_val) in &answers {
+                let q = match bank.by_id.get(qid) {
+                    Some(q) => q,
+                    None => continue, // 只判提交的题
+                };
+                let ans = ans_val.as_str().unwrap_or("");
                 if q.qtype == "essay" {
                     total += 1;
                     results.push(json!({
@@ -316,14 +320,18 @@ fn handle(
             } else {
                 0.0
             };
-            // ---- 记录成绩（按 subject|module）----
+            // ---- 记录成绩（按 subject|module，只记提交的题）----
             {
                 let mut m = stats.lock().unwrap();
-                for (qid, q) in &bank.by_id {
+                for (qid, ans_val) in &answers {
+                    let q = match bank.by_id.get(qid) {
+                        Some(q) => q,
+                        None => continue,
+                    };
                     if q.qtype == "essay" {
                         continue;
                     }
-                    let ans = answers.get(qid).and_then(|v| v.as_str()).unwrap_or("");
+                    let ans = ans_val.as_str().unwrap_or("");
                     let right = q.answer.to_uppercase();
                     let your = ans.to_uppercase().replace([' ', ','], "");
                     let ok = !your.is_empty() && your == right;
