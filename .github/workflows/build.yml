@@ -1,0 +1,39 @@
+name: Build aarch64 binary
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install zig & cargo-zigbuild
+        run: |
+          curl -L --fail --retry 3 -o /tmp/zig.tar.xz https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
+          tar xf /tmp/zig.tar.xz -C /tmp
+          echo "/tmp/zig-linux-x86_64-0.11.0" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
+
+      - name: Build release (aarch64 musl)
+        run: |
+          cargo zigbuild --release --target aarch64-unknown-linux-musl
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shuati-webui-rust-aarch64
+          path: target/aarch64-unknown-linux-musl/release/shuati-webui-rust
+          if-no-files-found: error
