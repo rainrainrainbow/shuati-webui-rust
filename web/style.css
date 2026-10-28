@@ -11,6 +11,12 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .subjects button small{color:var(--mut);margin-left:4px;font-size:11px}
 .subjects button.active{background:var(--blue);color:#fff;border-color:var(--blue)}
 .subjects button.active small{color:#dbeafe}
+.modebar{display:flex;gap:6px;overflow-x:auto;padding:0 12px 10px;scrollbar-width:none}
+.modebar::-webkit-scrollbar{display:none}
+.modebar .modebtn{flex:0 0 auto;border:1px solid var(--line);background:#fff;border-radius:14px;padding:6px 12px;font-size:12px;cursor:pointer;color:var(--txt);white-space:nowrap}
+.modebar .modebtn.active{background:#111827;color:#fff;border-color:#111827;font-weight:600}
+.hintcard{text-align:center;padding:40px 20px}
+.hintcard .hint{color:var(--mut);font-size:14px}
 #quiz{padding:12px}
 .qcard{background:var(--card);border-radius:14px;padding:18px 16px;box-shadow:0 1px 4px rgba(0,0,0,.04);margin-bottom:12px}
 .qmod{font-size:12px;color:var(--blue);font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
