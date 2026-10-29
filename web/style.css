@@ -25,6 +25,31 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .hintcard{text-align:center;padding:40px 20px}
 .hintcard .hint{color:var(--mut);font-size:14px}
 #quiz{padding:12px}
+.ghostbtn{background:#fff;color:var(--blue);border:1px solid var(--blue)}
+.pcside{display:none}
+body.pc{display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:
+ "top top" "cat cat" "search search" "subs subs" "mode mode" "quiz side" "foot foot";
+ gap:0 16px;max-width:1240px;margin:0 auto;padding-bottom:70px}
+body.pc .topbar{grid-area:top;position:sticky;top:0}
+body.pc .catbar{grid-area:cat}
+body.pc .subsearch-wrap{grid-area:search}
+body.pc .subjects{grid-area:subs}
+body.pc .modebar{grid-area:mode}
+body.pc #quiz{grid-area:quiz;min-width:0;padding:12px 0}
+body.pc #pcside{display:block;grid-area:side;position:sticky;top:60px;align-self:start;padding:12px 0}
+body.pc #foot{grid-area:foot;left:auto;right:auto;max-width:1240px;margin:0 auto}
+body.pc .qcard{padding:24px}
+body.pc .stem{font-size:17px}
+body.pc .pcside-inner{background:#fff;border-radius:14px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+body.pc .pcside-head{font-weight:700;font-size:14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+body.pc .pc-progress{color:var(--mut);font-weight:400;font-size:12px}
+body.pc .pcgrid-wrap{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;max-height:60vh;overflow-y:auto}
+body.pc .pcgrid{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 0;font-size:12px;cursor:pointer;color:var(--txt)}
+body.pc .pcgrid.ok{background:var(--ok);color:#fff;border-color:var(--ok)}
+body.pc .pcgrid.bad{background:var(--bad);color:#fff;border-color:var(--bad)}
+body.pc .pcgrid.done{background:#dbeafe;border-color:#93c5fd}
+body.pc .pcgrid.cur{outline:2px solid var(--blue);outline-offset:1px}
+body.pc .pcgrid.ok.cur,body.pc .pcgrid.bad.cur{outline-color:#111827}
 .qcard{background:var(--card);border-radius:14px;padding:18px 16px;box-shadow:0 1px 4px rgba(0,0,0,.04);margin-bottom:12px}
 .qmod{font-size:12px;color:var(--blue);font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .qmod .no{color:var(--mut);font-weight:400}
