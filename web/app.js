@@ -89,7 +89,7 @@ function catOf(s){
   if(/^zt/.test(id)) return '金管局真题';
   if(/^(xingce|yanyu|panduan|ziliao|changshi|shuliang|zhengzhi)$/.test(id)) return '国考行测';
   if(/^slzt/.test(id)) return '申论真题';
-  if(/^sl/.test(id)) return '国考申论';
+  if(/^sl/.test(id)||id==='shenlun') return '国考申论';
   return '其他';
 }
 function renderCatbar(){
