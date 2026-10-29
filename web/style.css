@@ -15,6 +15,13 @@ body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 .modebar::-webkit-scrollbar{display:none}
 .modebar .modebtn{flex:0 0 auto;border:1px solid var(--line);background:#fff;border-radius:14px;padding:6px 12px;font-size:12px;cursor:pointer;color:var(--txt);white-space:nowrap}
 .modebar .modebtn.active{background:#111827;color:#fff;border-color:#111827;font-weight:600}
+.catbar{display:flex;gap:6px;overflow-x:auto;padding:8px 12px 0;background:var(--bg);scrollbar-width:none;position:sticky;top:52px;z-index:19}
+.catbar::-webkit-scrollbar{display:none}
+.catbar .catbtn{flex:0 0 auto;border:1px solid var(--line);background:#fff;border-radius:12px;padding:5px 11px;font-size:12px;cursor:pointer;color:var(--txt);white-space:nowrap}
+.catbar .catbtn.active{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600}
+.subsearch-wrap{padding:6px 12px 0;background:var(--bg)}
+.subsearch-wrap input{width:100%;border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:13px;outline:none;background:#fff}
+.subsearch-wrap input:focus{border-color:var(--blue)}
 .hintcard{text-align:center;padding:40px 20px}
 .hintcard .hint{color:var(--mut);font-size:14px}
 #quiz{padding:12px}
