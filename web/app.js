@@ -80,7 +80,18 @@ async function loadSubjects(){
   renderModebar();
   CUR=SUBJECTS[0].id; loadQuiz();
 }
-function cats(){ return ['全部',...new Set(SUBJECTS.map(s=>s.category||'其他'))]; }
+function cats(){ return ['全部',...new Set(SUBJECTS.map(s=>catOf(s)))]; }
+function catOf(s){
+  if(s.category) return s.category;
+  const id=s.id||'';
+  if(id==='jisuanji') return '专业课';
+  if(/^zx/.test(id)) return '专项';
+  if(/^zt/.test(id)) return '金管局真题';
+  if(/^(xingce|yanyu|panduan|ziliao|changshi|shuliang|zhengzhi)$/.test(id)) return '国考行测';
+  if(/^slzt/.test(id)) return '申论真题';
+  if(/^sl/.test(id)) return '国考申论';
+  return '其他';
+}
 function renderCatbar(){
   const cb=$('#catbar'); cb.innerHTML='';
   cats().forEach(c=>{
@@ -94,12 +105,12 @@ function renderCatbar(){
 }
 function CATCOUNT(c){
   if(c==='全部') return SUBJECTS.length;
-  return SUBJECTS.filter(s=>(s.category||'其他')===c).length;
+  return SUBJECTS.filter(s=>catOf(s)===c).length;
 }
 function onSearch(v){ SEARCH=(v||'').toLowerCase().trim(); renderSubjects(); }
 function filteredSubjects(){
   let arr=SUBJECTS;
-  if(CAT!=='全部') arr=arr.filter(s=>(s.category||'其他')===CAT);
+  if(CAT!=='全部') arr=arr.filter(s=>catOf(s)===CAT);
   if(SEARCH) arr=arr.filter(s=>s.name.toLowerCase().includes(SEARCH)||s.id.toLowerCase().includes(SEARCH));
   return arr;
 }
