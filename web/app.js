@@ -3,6 +3,7 @@
 let SUBJECTS=[], CUR='', QS=[], IDX=0, ANSWERS={}, RESULTS={}, GRADED=false;
 let MODE='normal';
 let CAT='全部', SEARCH='';
+let PCMODE=false;
 const MOCK_IDS=['zt2019','zt2020','zt2021','zt2022','zt2023'];
 const LS_WRONG='shuati_wrong', LS_SRS='shuati_srs';
 const MODES=[['normal','常规'],['weak','薄弱优先'],['wrong','错题重练'],['srs','间隔复习'],['shuffle','交错']];
@@ -48,6 +49,34 @@ function renderModebar(){
   });
 }
 function shuffleArr(a){ const x=a.slice(); for(let i=x.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[x[i],x[j]]=[x[j],x[i]];} return x; }
+
+// ---- PC 模式（宽屏两栏：左题目，右侧答题卡面板）----
+function initPC(){
+  const saved=localStorage.getItem('shuati_pc');
+  PCMODE = saved===null ? (window.innerWidth>=1024) : (saved==='1');
+  applyPC();
+}
+function togglePC(){ PCMODE=!PCMODE; try{localStorage.setItem('shuati_pc',PCMODE?'1':'0');}catch(e){} applyPC(); }
+function applyPC(){
+  document.body.classList.toggle('pc',PCMODE);
+  const t=$('#pctoggle'); if(t) t.textContent=PCMODE?'📱 移动':'💻 PC';
+  renderPCside();
+}
+function renderPCside(){
+  const inner=$('#pcsideinner'); if(!inner) return;
+  if(!PCMODE){ inner.innerHTML=''; return; }
+  const done=Object.keys(ANSWERS).length;
+  let grid='';
+  QS.forEach((q,i)=>{
+    const r=RESULTS[q.id];
+    const cls=r?(r.correct?'ok':'bad'):(ANSWERS[q.id]!==undefined?'done':'');
+    grid+=`<button class="pcgrid ${cls}${i===IDX?' cur':''}" onclick="goPC(${i})">${i+1}</button>`;
+  });
+  inner.innerHTML=`<div class="pcside-head">答题卡 <span class="pc-progress">${done}/${QS.length}</span></div>
+    <div class="pcgrid-wrap">${grid||'<p class="hint">暂无题目</p>'}</div>
+    <button class="btn ghost" style="margin-top:12px;width:100%" onclick="showStats()">📊 成绩分析</button>`;
+}
+function goPC(i){ IDX=i; render(); }
 
 // ---- 模式应用 ----
 async function applyMode(qs){
@@ -174,6 +203,7 @@ function render(){
   bindOpts(q);
   bindEssay(q);
   renderFoot(no);
+  renderPCside();
   window.scrollTo(0,0);
 }
 function optHTML(q,o,i){
@@ -331,4 +361,5 @@ async function renderStats(){
 }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1600); }
 function esc(s){ return String(s||'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
+initPC();
 loadSubjects();
