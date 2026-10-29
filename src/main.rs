@@ -183,6 +183,7 @@ fn main() {
     let _ = std::fs::create_dir_all(&dir);
     let stats_path = dir.join("stats.json");
     let stats = Arc::new(Mutex::new(load_stats(&stats_path)));
+    let reports_path = dir.join("reports.json");
 
     let bank = Arc::new(Bank::load(&quiz_path));
     let server = Server::http((bind.as_str(), port)).expect("绑定端口失败");
@@ -193,8 +194,9 @@ fn main() {
         let bank = bank.clone();
         let stats = stats.clone();
         let stats_path = stats_path.clone();
+        let reports_path = reports_path.clone();
         std::thread::spawn(move || {
-            let _ = handle(request, &bank, &stats, &stats_path);
+            let _ = handle(request, &bank, &stats, &stats_path, &reports_path);
         });
     }
 }
@@ -237,6 +239,7 @@ fn handle(
     bank: &Bank,
     stats: &Arc<Mutex<StatsMap>>,
     stats_path: &std::path::Path,
+    reports_path: &std::path::Path,
 ) {
     let method = request.method().clone();
     let url = request.url().to_string();
@@ -381,6 +384,31 @@ fn handle(
                 "objective_correct": obj_correct, "score": pct,
                 "results": results,
             })));
+        }
+        (POST, "/api/report") => {
+            let mut body = String::new();
+            let _ = request.as_reader().read_to_string(&mut body);
+            let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            let qid = p["qid"].as_str().unwrap_or("").to_string();
+            let q = bank.by_id.get(&qid);
+            let rec = json!({
+                "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                "qid": qid,
+                "subject": q.map(|q| q.subject.clone()).unwrap_or_else(|| p["subject"].as_str().unwrap_or("").to_string()),
+                "module": q.map(|q| q.module.clone()).unwrap_or_default(),
+                "stem": q.map(|q| q.stem.chars().take(80).collect::<String>()).unwrap_or_default(),
+                "answer": q.map(|q| q.answer.clone()).unwrap_or_default(),
+                "reason": p["reason"].as_str().unwrap_or("其他").to_string(),
+                "note": p["note"].as_str().unwrap_or("").to_string(),
+            });
+            let mut arr: Vec<Value> = std::fs::read_to_string(reports_path).ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            arr.push(rec);
+            if let Ok(s) = serde_json::to_string_pretty(&arr) {
+                let _ = std::fs::write(reports_path, s);
+            }
+            let _ = request.respond(json_response(200, &json!({"ok": true, "count": arr.len()})));
         }
         _ => { let _ = request.respond(text_response(404, "text/plain; charset=utf-8", "not found".to_string())); }
     }
