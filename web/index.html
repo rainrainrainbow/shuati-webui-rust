@@ -20,6 +20,9 @@
 <div class="modebar" id="modebar"></div>
 <main id="quiz"></main>
 <aside id="pcside" class="pcside"><div class="pcside-inner" id="pcsideinner"></div></aside>
+<div id="reportmask" class="sheetmask" onclick="if(event.target===this)closeReport()">
+  <div class="sheet"><div id="reportbody"></div></div>
+</div>
 <div id="answerSheet" class="sheetmask" onclick="if(event.target===this)closeSheet()">
   <div class="sheet">
     <div class="sheethead">答题卡 <span id="sheetcnt"></span>
