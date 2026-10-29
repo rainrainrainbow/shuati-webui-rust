@@ -9,13 +9,17 @@
 <body>
 <header class="topbar">
   <div class="title">国考刷题<small id="subname"></small></div>
-  <button class="statbtn" onclick="showStats()">📊 成绩</button>
+  <div style="display:flex;gap:8px">
+    <button class="statbtn ghostbtn" id="pctoggle" onclick="togglePC()">💻 PC</button>
+    <button class="statbtn" onclick="showStats()">📊 成绩</button>
+  </div>
 </header>
 <div class="catbar" id="catbar"></div>
 <div class="subsearch-wrap"><input id="subsearch" placeholder="🔍 搜索科目…" oninput="onSearch(this.value)"></div>
 <div class="subjects" id="subjects"><p class="hint">加载题库中…</p></div>
 <div class="modebar" id="modebar"></div>
 <main id="quiz"></main>
+<aside id="pcside" class="pcside"><div class="pcside-inner" id="pcsideinner"></div></aside>
 <div id="answerSheet" class="sheetmask" onclick="if(event.target===this)closeSheet()">
   <div class="sheet">
     <div class="sheethead">答题卡 <span id="sheetcnt"></span>
