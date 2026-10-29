@@ -2,6 +2,7 @@
 // 科学方法：薄弱优先 / 错题重练 / 间隔重复(Leitner) / 交错练习；主动回忆=答题后再看答案
 let SUBJECTS=[], CUR='', QS=[], IDX=0, ANSWERS={}, RESULTS={}, GRADED=false;
 let MODE='normal';
+let CAT='全部', SEARCH='';
 const MOCK_IDS=['zt2019','zt2020','zt2021','zt2022','zt2023'];
 const LS_WRONG='shuati_wrong', LS_SRS='shuati_srs';
 const MODES=[['normal','常规'],['weak','薄弱优先'],['wrong','错题重练'],['srs','间隔复习'],['shuffle','交错']];
@@ -74,15 +75,45 @@ async function applyMode(qs){
 async function loadSubjects(){
   const d=await (await fetch('/api/subjects')).json();
   SUBJECTS=d.subjects;
+  renderCatbar();
+  renderSubjects();
+  renderModebar();
+  CUR=SUBJECTS[0].id; loadQuiz();
+}
+function cats(){ return ['全部',...new Set(SUBJECTS.map(s=>s.category||'其他'))]; }
+function renderCatbar(){
+  const cb=$('#catbar'); cb.innerHTML='';
+  cats().forEach(c=>{
+    const b=document.createElement('button');
+    b.className='catbtn'+(CAT===c?' active':'');
+    const n=CATCOUNT(c);
+    b.textContent=n>0?`${c}${n>0&&c!=='全部'?` ${n}`:''}`:c;
+    b.onclick=()=>{ CAT=c; renderCatbar(); renderSubjects(); };
+    cb.appendChild(b);
+  });
+}
+function CATCOUNT(c){
+  if(c==='全部') return SUBJECTS.length;
+  return SUBJECTS.filter(s=>(s.category||'其他')===c).length;
+}
+function onSearch(v){ SEARCH=(v||'').toLowerCase().trim(); renderSubjects(); }
+function filteredSubjects(){
+  let arr=SUBJECTS;
+  if(CAT!=='全部') arr=arr.filter(s=>(s.category||'其他')===CAT);
+  if(SEARCH) arr=arr.filter(s=>s.name.toLowerCase().includes(SEARCH)||s.id.toLowerCase().includes(SEARCH));
+  return arr;
+}
+function renderSubjects(){
   const box=$('#subjects'); box.innerHTML='';
-  SUBJECTS.forEach(s=>{
+  const arr=filteredSubjects();
+  if(!arr.length){ box.innerHTML='<p class="hint">无匹配科目</p>'; return; }
+  arr.forEach(s=>{
     const b=document.createElement('button');
     b.innerHTML=`${s.name}<small>${s.count}</small>`;
     b.onclick=()=>{ if(CUR!==s.id){CUR=s.id; loadQuiz();} };
     box.appendChild(b);
   });
-  renderModebar();
-  CUR=SUBJECTS[0].id; loadQuiz();
+  $$('.subjects button').forEach((b,i)=>{b.classList.toggle('active', arr[i]&&arr[i].id===CUR);});
 }
 async function loadQuiz(){
   GRADED=false; ANSWERS={}; RESULTS={}; IDX=0;
