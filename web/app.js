@@ -5,8 +5,8 @@ let MODE='normal';
 let CAT='全部', SEARCH='';
 let PCMODE=false;
 const MOCK_IDS=['zt2019','zt2020','zt2021','zt2022','zt2023'];
-const LS_WRONG='shuati_wrong', LS_SRS='shuati_srs';
-const MODES=[['normal','常规'],['weak','薄弱优先'],['wrong','错题重练'],['srs','间隔复习'],['shuffle','交错']];
+const LS_WRONG='shuati_wrong', LS_SRS='shuati_srs', LS_FAV='shuati_fav';
+const MODES=[['normal','常规'],['weak','薄弱优先'],['wrong','错题重练'],['srs','间隔复习'],['shuffle','交错'],['fav','⭐ 收藏']];
 const SRS_DAYS=[0,1,3,7,15,30]; // box1~5 间隔
 const $=s=>document.querySelector(s);
 const $$=s=>document.querySelectorAll(s);
@@ -35,6 +35,39 @@ function markGrade(qid,correct,subject){
 }
 function isDue(qid){
   const r=srs()[qid]; return !r || r.box===0 || r.next<=Date.now();
+}
+
+// ---- 收藏 + 题目纠错反馈 ----
+const favs=()=>loadJ(LS_FAV);
+function toggleFav(qid){
+  const f=favs(); const q=QS.find(x=>x.id===qid);
+  if(f[qid]){ delete f[qid]; toast('已取消收藏'); }
+  else { f[qid]={stem:q?q.stem.slice(0,60):qid,module:q?q.module:'',at:Date.now()}; toast('⭐ 已收藏'); }
+  saveJ(LS_FAV,f); render(); renderPCside();
+}
+function openReport(qid){
+  const q=QS.find(x=>x.id===qid);
+  const reasons=['答案解析有误','答案有误','题目不完整/缺项','选项有误','题干有误','其他'];
+  const opts=reasons.map((r,i)=>`<label class="rep-opt"><input type="radio" name="rep" value="${r}" ${i===0?'checked':''}> ${r}</label>`).join('');
+  const m=$('#reportmask');
+  $('#reportbody').innerHTML=`
+    <div class="sheethead">纠错反馈 <button class="x" onclick="closeReport()">✕</button></div>
+    <div class="rep-stem">${esc((q&&q.stem||'').slice(0,120))}</div>
+    <div class="rep-opts">${opts}</div>
+    <textarea id="repnote" class="rep-note" placeholder="补充说明（可选）：为什么错了？正确应是什么？"></textarea>
+    <button class="btn" onclick="submitReport('${qid}')">提交反馈</button>`;
+  m.classList.add('show');
+}
+function closeReport(){ $('#reportmask').classList.remove('show'); }
+async function submitReport(qid){
+  const reason=(document.querySelector('input[name="rep"]:checked')||{}).value||'其他';
+  const note=$('#repnote').value||'';
+  closeReport();
+  try{
+    const r=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid,reason,note})});
+    const d=await r.json();
+    toast(d.ok?'✅ 已提交反馈，感谢！':'提交失败');
+  }catch(e){ toast('提交失败，请重试'); }
 }
 
 // ---- 模式栏 ----
@@ -92,6 +125,11 @@ async function applyMode(qs){
   }
   if(MODE==='wrong'){
     const wb=wrongBank(); const arr=qs.filter(q=>wb[q.id]);
+    return arr;
+  }
+  if(MODE==='fav'){
+    const f=favs(); const arr=qs.filter(q=>f[q.id]);
+    if(!arr.length) toast('还没有收藏题目（答题页点 ☆）');
     return arr;
   }
   if(MODE==='srs' && isObj){
@@ -182,9 +220,10 @@ function render(){
     return;
   }
   const q=QS[IDX], no=IDX+1;
+  const isFav=!!favs()[q.id];
   const pct=Math.round((IDX)/(QS.length)*100);
   let h=`<div class="qcard">
-    <div class="qmod"><span>${esc(q.module)}${q.type==='multi'?'（多选）':''}</span><span class="no">第${no}/${QS.length}题</span></div>
+    <div class="qmod"><span>${esc(q.module)}${q.type==='multi'?'（多选）':''}</span><span class="no">第${no}/${QS.length}题 <button class="toolbtn ${isFav?'on':''}" onclick="toggleFav('${q.id}')">${isFav?'⭐':'☆'}收藏</button><button class="toolbtn" onclick="openReport('${q.id}')">⚠️纠错</button></span></div>
     <div class="progress"><i style="width:${pct}%"></i></div>
     <div class="stem">${esc(q.stem)}</div>`;
   if(q.material) h+=`<div class="material">${esc(q.material)}</div>`;
