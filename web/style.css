@@ -53,6 +53,16 @@ body.pc .pcgrid.ok.cur,body.pc .pcgrid.bad.cur{outline-color:#111827}
 .qcard{background:var(--card);border-radius:14px;padding:18px 16px;box-shadow:0 1px 4px rgba(0,0,0,.04);margin-bottom:12px}
 .qmod{font-size:12px;color:var(--blue);font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .qmod .no{color:var(--mut);font-weight:400}
+.toolbtn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:3px 8px;font-size:11px;color:var(--txt);cursor:pointer;margin-left:4px;vertical-align:middle}
+.toolbtn.on{color:#f59e0b;border-color:#f59e0b;background:#fffbeb}
+.toolbtn:hover{border-color:var(--blue);color:var(--blue)}
+.rep-stem{background:var(--bg);border-radius:8px;padding:10px;font-size:13px;color:var(--txt);margin:10px 0;line-height:1.5;max-height:110px;overflow-y:auto}
+.rep-opts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.rep-opt{border:1px solid var(--line);border-radius:20px;padding:6px 12px;font-size:13px;cursor:pointer}
+.rep-opt input{display:none}
+.rep-opt:has(input:checked){border-color:var(--blue);background:#eff6ff;color:var(--blue)}
+.rep-note{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:14px;min-height:70px;resize:vertical;font-family:inherit}
+.rep-note:focus{outline:none;border-color:var(--blue)}
 .progress{height:4px;background:var(--line);border-radius:2px;overflow:hidden;margin:8px 0 14px}
 .progress i{display:block;height:100%;background:var(--blue);transition:width .2s}
 .stem{font-size:16px;line-height:1.7;margin-bottom:14px;white-space:pre-wrap}
