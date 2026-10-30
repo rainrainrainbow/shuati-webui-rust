@@ -4,7 +4,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
@@ -562,7 +561,7 @@ fn today_str() -> String {
     let y = 1970 + (days * 400 + 0) / 146097; // 近似，够用
     let _ = y;
     // 用 chrono 更准，但避免新依赖；简单算
-    let (yy, mm, dd) = civil_from_days(days);
+    let (yy, mm, dd) = civil_from_days(days as i64);
     format!("{:04}-{:02}-{:02}", yy, mm, dd)
 }
 // 从天数(1970-01-01=0)算公历日期
