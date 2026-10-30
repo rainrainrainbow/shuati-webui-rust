@@ -267,6 +267,11 @@ async function loadQuiz(){
   $$('#modebar .modebtn').forEach((b,i)=>{b.classList.toggle('active', MODES[i][0]===MODE);});
   render();
 }
+function diffBadge(d){
+  if(!d) return '';
+  const c=d>=5?'#e5484d':d>=4?'#f76b15':'#3b82f6';
+  return `<span class="diffbadge" style="background:${c}1a;color:${c}">难度${'★'.repeat(d)}${'☆'.repeat(5-d)}</span>`;
+}
 function render(){
   if(!QS.length){
     let hint='该科目暂无题目';
@@ -281,7 +286,7 @@ function render(){
   const isFav=!!favs()[q.id];
   const pct=Math.round((IDX)/(QS.length)*100);
   let h=`<div class="qcard">
-    <div class="qmod"><span>${esc(q.module)}${q.type==='multi'?'（多选）':''}</span><span class="no">第${no}/${QS.length}题 <button class="toolbtn ${isFav?'on':''}" onclick="toggleFav('${q.id}')">${isFav?'⭐':'☆'}收藏</button><button class="toolbtn" onclick="openReport('${q.id}')">⚠️纠错</button></span></div>
+    <div class="qmod"><span>${esc(q.module)}${q.type==='multi'?'（多选）':''} ${diffBadge(q.difficulty)}</span><span class="no">第${no}/${QS.length}题 <button class="toolbtn ${isFav?'on':''}" onclick="toggleFav('${q.id}')">${isFav?'⭐':'☆'}收藏</button><button class="toolbtn" onclick="openReport('${q.id}')">⚠️纠错</button></span></div>
     <div class="progress"><i style="width:${pct}%"></i></div>
     <div class="stem">${esc(q.stem)}</div>`;
   if(q.material) h+=`<div class="material">${esc(q.material)}</div>`;
