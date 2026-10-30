@@ -183,6 +183,8 @@ fn main() {
     let _ = std::fs::create_dir_all(&dir);
     let stats_path = dir.join("stats.json");
     let stats = Arc::new(Mutex::new(load_stats(&stats_path)));
+    let daily_path = dir.join("daily.json");
+    let daily = Arc::new(Mutex::new(load_daily(&daily_path)));
     let reports_path = dir.join("reports.json");
 
     let bank = Arc::new(Bank::load(&quiz_path));
@@ -194,9 +196,11 @@ fn main() {
         let bank = bank.clone();
         let stats = stats.clone();
         let stats_path = stats_path.clone();
+        let daily = daily.clone();
+        let daily_path = daily_path.clone();
         let reports_path = reports_path.clone();
         std::thread::spawn(move || {
-            let _ = handle(request, &bank, &stats, &stats_path, &reports_path);
+            let _ = handle(request, &bank, &stats, &stats_path, &daily, &daily_path, &reports_path);
         });
     }
 }
@@ -222,6 +226,27 @@ fn save_stats(path: &std::path::Path, m: &StatsMap) {
     }
 }
 
+// ---- 每日统计（按日期累计 t/c + 分模块 by） ----
+#[derive(Default, Clone, Serialize, Deserialize)]
+struct DayStat {
+    t: usize,
+    c: usize,
+    by: HashMap<String, ModStat>,
+}
+type DailyMap = HashMap<String, DayStat>;
+
+fn load_daily(path: &std::path::Path) -> DailyMap {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<DailyMap>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_daily(path: &std::path::Path, m: &DailyMap) {
+    if let Ok(s) = serde_json::to_string(m) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
 fn text_response(code: u16, content_type: &str, body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     Response::from_data(body.into_bytes())
         .with_status_code(code)
@@ -239,6 +264,8 @@ fn handle(
     bank: &Bank,
     stats: &Arc<Mutex<StatsMap>>,
     stats_path: &std::path::Path,
+    daily: &Arc<Mutex<DailyMap>>,
+    daily_path: &std::path::Path,
     reports_path: &std::path::Path,
 ) {
     let method = request.method().clone();
@@ -379,11 +406,53 @@ fn handle(
                 }
                 save_stats(stats_path, &m);
             }
+            // ---- 记录每日统计（date 由前端提供，YYYY-MM-DD）----
+            {
+                let date = payload["date"].as_str().unwrap_or("").to_string();
+                if !date.is_empty() {
+                    let mut dl = daily.lock().unwrap();
+                    let d = dl.entry(date.clone()).or_default();
+                    for (qid, ans_val) in &answers {
+                        let q = match bank.by_id.get(qid) {
+                            Some(q) => q,
+                            None => continue,
+                        };
+                        if q.qtype == "essay" {
+                            continue;
+                        }
+                        let ans = ans_val.as_str().unwrap_or("");
+                        let right = q.answer.to_uppercase();
+                        let your = ans.to_uppercase().replace([' ', ','], "");
+                        let ok = !your.is_empty() && your == right;
+                        let key = format!("{}|{}", q.subject, q.module);
+                        d.t += 1;
+                        let e = d.by.entry(key).or_default();
+                        e.t += 1;
+                        if ok {
+                            d.c += 1;
+                            e.c += 1;
+                        }
+                    }
+                    save_daily(daily_path, &dl);
+                }
+            }
             let _ = request.respond(json_response(200, &json!({
                 "total": total, "objective_total": obj_total,
                 "objective_correct": obj_correct, "score": pct,
                 "results": results,
             })));
+        }
+        ("GET", "/api/daily-stats") => {
+            let dl = daily.lock().unwrap();
+            let mut days: Vec<Value> = dl.iter().map(|(d, s)| {
+                json!({
+                    "date": d, "t": s.t, "c": s.c,
+                    "pct": if s.t > 0 { (s.c as f64 * 100.0 / s.t as f64 * 10.0).round() / 10.0 } else { 0.0 }
+                })
+            }).collect();
+            days.sort_by(|a, b| b["date"].as_str().unwrap_or("").cmp(a["date"].as_str().unwrap_or("")));
+            let today = days.first().cloned().unwrap_or(json!({"date":"","t":0,"c":0,"pct":0.0}));
+            let _ = request.respond(json_response(200, &json!({"today": today, "days": days})));
         }
         (POST, "/api/report") => {
             let mut body = String::new();
