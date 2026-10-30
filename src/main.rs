@@ -38,6 +38,8 @@ struct Q {
     material: String,
     #[serde(default)]
     reference: String,
+    #[serde(default)]
+    difficulty: u8,
 }
 
 struct Bank {
@@ -90,6 +92,7 @@ impl Bank {
                     explain: q["explain"].as_str().unwrap_or("").to_string(),
                     material: q["material"].as_str().unwrap_or("").to_string(),
                     reference: q["reference"].as_str().unwrap_or("").to_string(),
+                    difficulty: q["difficulty"].as_u64().unwrap_or(0) as u8,
                 });
             }
         }
@@ -109,6 +112,7 @@ impl Bank {
                 json!({
                     "id": q.id, "module": q.module, "type": q.qtype,
                     "stem": q.stem, "options": q.options, "material": q.material,
+                    "difficulty": q.difficulty,
                 })
             })
             .collect()
