@@ -147,3 +147,6 @@ textarea{width:100%;min-height:140px;border:1.5px solid var(--line);border-radiu
 .reportview li{font-size:14px;line-height:1.7;margin:4px 0}
 .reportview .rv-empty{color:var(--mut);text-align:center;padding:40px 0;font-size:14px}
 .reportview .rv-nav{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+
+/* 难度徽章 */
+.diffbadge{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:11px;font-weight:600;letter-spacing:.3px;vertical-align:middle}
