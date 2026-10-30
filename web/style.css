@@ -121,3 +121,29 @@ textarea{width:100%;min-height:140px;border:1.5px solid var(--line);border-radiu
 .toast{position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:60;background:rgba(0,0,0,.8);color:#fff;padding:8px 16px;border-radius:18px;font-size:13px;display:none}
 .toast.show{display:block}
 .hint{color:var(--mut);text-align:center;padding:30px 0}
+/* ===== 登录 ===== */
+.loginmask{position:fixed;inset:0;background:linear-gradient(135deg,#eef2ff,#f6f0ff);z-index:100;display:flex;align-items:center;justify-content:center}
+.loginmask.hide{display:none}
+.loginbox{background:#fff;border-radius:18px;padding:34px 30px;width:min(360px,90vw);box-shadow:0 20px 60px rgba(70,90,160,.18);text-align:center}
+.logintitle{font-size:22px;font-weight:800;margin-bottom:4px}
+.loginsub{font-size:12px;color:var(--mut);margin-bottom:20px;line-height:1.6}
+.logininput{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;font-size:15px;margin-bottom:12px;box-sizing:border-box;outline:none}
+.logininput:focus{border-color:var(--blue)}
+.loginbtn{width:100%;padding:12px;background:var(--blue);color:#fff;border:none;border-radius:10px;font-size:15px;cursor:pointer;font-weight:600}
+.loginbtn:hover{opacity:.9}
+.loginbtn.ghost{background:#fff;color:var(--blue);border:1px solid var(--blue)}
+.loginrow{display:flex;align-items:center;gap:10px;margin:16px 0}
+.loginsep{flex:1;height:1px;background:var(--line)}
+.loginerr{color:var(--bad);font-size:13px;min-height:18px;margin-bottom:6px}
+/* ===== 报告视图 ===== */
+.sheet-wide{max-width:760px;width:92vw;max-height:82vh;overflow:auto}
+.reportview h2{font-size:19px;margin-bottom:4px}
+.reportview .rv-date{color:var(--mut);font-size:13px;margin-bottom:14px}
+.reportview h3{font-size:15px;margin:18px 0 8px;color:var(--blue)}
+.reportview table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+.reportview th,.reportview td{border:1px solid var(--line);padding:6px 9px;text-align:left}
+.reportview th{background:#f7f8fb}
+.reportview p{font-size:14px;line-height:1.7;margin:6px 0}
+.reportview li{font-size:14px;line-height:1.7;margin:4px 0}
+.reportview .rv-empty{color:var(--mut);text-align:center;padding:40px 0;font-size:14px}
+.reportview .rv-nav{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
