@@ -311,7 +311,9 @@ function renderFoot(no){
   $('#foot').innerHTML=h;
 }
 function go(d){ IDX=Math.max(0,Math.min(QS.length-1,IDX+d)); render(); }
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 async function apiCheck(payload){
+  payload.date=todayStr();
   const r=await fetch('/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   return r.json();
 }
@@ -380,10 +382,25 @@ function closeStats(){ $('#statpanel').classList.remove('open'); }
 async function renderStats(){
   const body=$('#statbody');
   const d=await (await fetch('/api/stats')).json();
+  const dl=await (await fetch('/api/daily-stats')).json();
   const wb=wrongBank(), s=srs();
   const wbN=Object.keys(wb).length;
   const dueN=Object.keys(s).filter(isDue).length;
-  if(!d.modules||!d.modules.length){ body.innerHTML=`<h3>📊 成绩分析</h3><p class="hint">还没有成绩记录。做题后这里按模块统计正确率，定位薄弱项。</p><div class="statadvice">错题本 ${wbN} 题 · 待复习 ${dueN} 题</div>`; return; }
+  // 每日统计块（今天 + 近7天）
+  let dailyHtml='<div class="statadvice" style="margin-top:10px;text-align:left">📅 每日刷题</div>';
+  if(!dl.days||!dl.days.length){
+    dailyHtml+='<div class="hint" style="font-size:12px;padding:4px 0">还没有每日记录。做题后这里按天统计。</div>';
+  } else {
+    const last7=dl.days.slice(0,7);
+    dailyHtml+=last7.map(x=>{
+      const pct=x.pct||0;
+      return `<div class="dailyrow"><span class="dd">${x.date===(dl.today&&dl.today.date)?'今天':(x.date||'')}</span>
+        <span class="bar"><i class="${pct<60?'weak':''}" style="width:${Math.min(pct,100)}%"></i></span>
+        <span class="pct">${pct}%</span><span class="d">${x.c}/${x.t}</span></div>`;
+    }).join('');
+    if(dl.days.length>7) dailyHtml+=`<div class="hint" style="font-size:12px;padding:4px 0">…共 ${dl.days.length} 天记录</div>`;
+  }
+  if(!d.modules||!d.modules.length){ body.innerHTML=`<h3>📊 成绩分析</h3><p class="hint">还没有成绩记录。做题后这里按模块统计正确率，定位薄弱项。</p><div class="statadvice">错题本 ${wbN} 题 · 待复习 ${dueN} 题</div>${dailyHtml}`; return; }
   const nm={}; SUBJECTS.forEach(x=>nm[x.id]=x.name);
   const rows=d.modules.map(m=>{
     const weak=m.pct<60?'weak':'';
@@ -396,7 +413,8 @@ async function renderStats(){
   body.innerHTML=`<h3>📊 成绩分析 <small style="color:#8a94a6;font-weight:400">共答 ${d.total} · 对 ${d.correct}</small></h3>
     <div class="statoverall">${d.overall}%</div><div>${rows}</div>
     <div class="statadvice">${adv}</div>
-    <div class="statadvice">📕 错题本 ${wbN} 题 · 🔁 待复习 ${dueN} 题 <button class="btn ghost" style="margin-top:6px" onclick="closeStats();MODE='wrong';loadQuiz()">去刷错题</button> <button class="btn ghost" style="margin-top:6px" onclick="closeStats();MODE='srs';loadQuiz()">去复习</button></div>`;
+    <div class="statadvice">📕 错题本 ${wbN} 题 · 🔁 待复习 ${dueN} 题 <button class="btn ghost" style="margin-top:6px" onclick="closeStats();MODE='wrong';loadQuiz()">去刷错题</button> <button class="btn ghost" style="margin-top:6px" onclick="closeStats();MODE='srs';loadQuiz()">去复习</button></div>
+    ${dailyHtml}`;
 }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1600); }
 function esc(s){ return String(s||'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
