@@ -11,9 +11,28 @@
   <div class="title">国考刷题<small id="subname"></small></div>
   <div style="display:flex;gap:8px">
     <button class="statbtn ghostbtn" id="pctoggle" onclick="togglePC()">💻 PC</button>
+    <button class="statbtn" onclick="showReport()">📋 报告</button>
     <button class="statbtn" onclick="showStats()">📊 成绩</button>
+    <button class="statbtn ghostbtn" id="userbtn" onclick="logout()" title="退出登录">👤 <span id="uname"></span></button>
   </div>
 </header>
+<!-- 登录遮罩 -->
+<div id="loginmask" class="loginmask">
+  <div class="loginbox">
+    <div class="logintitle">国考刷题 · 登录</div>
+    <div class="loginsub">行测 / 申论 / 计算机岗 · 每晚 21:00 自动生成学习报告</div>
+    <input id="loginuser" class="logininput" placeholder="用户名" autocomplete="username">
+    <input id="loginpass" class="logininput" type="password" placeholder="密码" autocomplete="current-password">
+    <div id="loginerr" class="loginerr"></div>
+    <button class="loginbtn" onclick="doLogin()">登 录</button>
+    <div class="loginrow"><span class="loginsep"></span><span class="loginsub">还没有账号？</span><span class="loginsep"></span></div>
+    <button class="loginbtn ghost" onclick="doRegister()">注 册</button>
+  </div>
+</div>
+<!-- 报告遮罩 -->
+<div id="reportviewmask" class="sheetmask" onclick="if(event.target===this)closeReportView()">
+  <div class="sheet sheet-wide"><div id="reportviewbody"></div></div>
+</div>
 <div class="catbar" id="catbar"></div>
 <div class="subsearch-wrap"><input id="subsearch" placeholder="🔍 搜索科目…" oninput="onSearch(this.value)"></div>
 <div class="subjects" id="subjects"><p class="hint">加载题库中…</p></div>
