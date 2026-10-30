@@ -13,6 +13,64 @@ const $$=s=>document.querySelectorAll(s);
 const isMock=()=>MOCK_IDS.includes(CUR);
 const isEssay=()=>QS.length>0 && QS[0].type==='essay';
 
+// ---- 多用户认证 ----
+let TOKEN=localStorage.getItem('shuati_token')||'';
+let USERNAME=localStorage.getItem('shuati_user')||'';
+function api(path,opts){
+  opts=opts||{};
+  opts.headers=Object.assign({},opts.headers||{});
+  if(TOKEN) opts.headers['Authorization']='Bearer '+TOKEN;
+  return fetch(path,opts);
+}
+function requireLogin(){
+  if(TOKEN) return;
+  $('#loginmask').classList.remove('hide');
+}
+function onAuthed(name){
+  USERNAME=name; localStorage.setItem('shuati_user',name);
+  $('#uname').textContent=name;
+  $('#loginmask').classList.add('hide');
+  $('#subname').textContent=' · '+name;
+  loadSubjects();
+}
+function logout(){
+  if(TOKEN){ fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})}).catch(()=>{}); }
+  TOKEN=''; USERNAME=''; localStorage.removeItem('shuati_token'); localStorage.removeItem('shuati_user');
+  $('#uname').textContent=''; $('#subname').textContent='';
+  $('#loginmask').classList.remove('hide');
+}
+async function doLogin(){
+  const u=$('#loginuser').value.trim(), p=$('#loginpass').value;
+  $('#loginerr').textContent='';
+  if(!u||!p){ $('#loginerr').textContent='请输入用户名和密码'; return; }
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.ok){ TOKEN=d.token; localStorage.setItem('shuati_token',d.token); onAuthed(d.name||d.username); }
+    else $('#loginerr').textContent=d.err||'登录失败';
+  }catch(e){ $('#loginerr').textContent='网络错误'; }
+}
+async function doRegister(){
+  const u=$('#loginuser').value.trim(), p=$('#loginpass').value;
+  $('#loginerr').textContent='';
+  if(!u||!p){ $('#loginerr').textContent='请输入用户名和密码'; return; }
+  try{
+    const r=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.ok){ TOKEN=d.token; localStorage.setItem('shuati_token',d.token); onAuthed(d.name||d.username); toast('✅ 注册成功，欢迎 '+d.name); }
+    else $('#loginerr').textContent=d.err||'注册失败';
+  }catch(e){ $('#loginerr').textContent='网络错误'; }
+}
+// 进入页面：有 token 则验证，否则弹登录
+async function bootAuth(){
+  if(!TOKEN){ requireLogin(); return; }
+  try{
+    const r=await api('/api/me');
+    if(r.status===200){ const d=await r.json(); onAuthed(d.name||d.username); }
+    else { TOKEN=''; localStorage.removeItem('shuati_token'); requireLogin(); }
+  }catch(e){ requireLogin(); }
+}
+
 // ---- 错题本 + SRS (localStorage) ----
 function loadJ(k){ try{return JSON.parse(localStorage.getItem(k))||{};}catch(e){return {};} }
 function saveJ(k,v){ try{localStorage.setItem(k,JSON.stringify(v));}catch(e){} }
@@ -64,7 +122,7 @@ async function submitReport(qid){
   const note=$('#repnote').value||'';
   closeReport();
   try{
-    const r=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid,reason,note})});
+    const r=await api('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid,reason,note})});
     const d=await r.json();
     toast(d.ok?'✅ 已提交反馈，感谢！':'提交失败');
   }catch(e){ toast('提交失败，请重试'); }
@@ -117,7 +175,7 @@ async function applyMode(qs){
   if(MODE==='shuffle') return shuffleArr(qs);
   if(MODE==='weak' && isObj){
     let st={};
-    try{ const d=await (await fetch('/api/stats')).json(); (d.modules||[]).forEach(m=>{ if(m.subject===CUR) st[m.module]=m.pct; }); }catch(e){}
+    try{ const d=await (await api('/api/stats')).json(); (d.modules||[]).forEach(m=>{ if(m.subject===CUR) st[m.module]=m.pct; }); }catch(e){}
     const wk=qs.filter(q=>st[q.module]!==undefined && st[q.module]<60);
     const rest=qs.filter(q=>!(st[q.module]!==undefined && st[q.module]<60));
     if(wk.length) toast('薄弱优先：'+wk.length+' 道薄弱题提前');
@@ -140,7 +198,7 @@ async function applyMode(qs){
 }
 
 async function loadSubjects(){
-  const d=await (await fetch('/api/subjects')).json();
+  const d=await (await api('/api/subjects')).json();
   SUBJECTS=d.subjects;
   renderCatbar();
   renderSubjects();
@@ -195,7 +253,7 @@ function renderSubjects(){
 }
 async function loadQuiz(){
   GRADED=false; ANSWERS={}; RESULTS={}; IDX=0;
-  const d=await (await fetch('/api/questions?subject='+CUR)).json();
+  const d=await (await api('/api/questions?subject='+CUR)).json();
   const qs=await applyMode(d.questions);
   QS=qs;
   const sub=SUBJECTS.find(s=>s.id===CUR);
@@ -314,7 +372,7 @@ function go(d){ IDX=Math.max(0,Math.min(QS.length-1,IDX+d)); render(); }
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 async function apiCheck(payload){
   payload.date=todayStr();
-  const r=await fetch('/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const r=await api('/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   return r.json();
 }
 async function submitOne(qid,val){
@@ -381,8 +439,8 @@ async function showStats(){
 function closeStats(){ $('#statpanel').classList.remove('open'); }
 async function renderStats(){
   const body=$('#statbody');
-  const d=await (await fetch('/api/stats')).json();
-  const dl=await (await fetch('/api/daily-stats')).json();
+  const d=await (await api('/api/stats')).json();
+  const dl=await (await api('/api/daily-stats')).json();
   const wb=wrongBank(), s=srs();
   const wbN=Object.keys(wb).length;
   const dueN=Object.keys(s).filter(isDue).length;
@@ -417,6 +475,51 @@ async function renderStats(){
     ${dailyHtml}`;
 }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1600); }
-function esc(s){ return String(s||'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
+function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---- 每日学习报告（网页查看）----
+function closeReportView(){ $('#reportviewmask').classList.remove('open'); }
+async function showReport(date){
+  $('#reportviewmask').classList.add('open');
+  const body=$('#reportviewbody');
+  body.innerHTML='<div class="rv-empty">加载中…</div>';
+  let dates=[];
+  try{ const r=await api('/api/report-dates'); if(r.status===200){ dates=(await r.json()).dates||[]; } }catch(e){}
+  let d=date||dates[0]||'';
+  if(!d){
+    body.innerHTML='<div class="reportview"><h2>📋 学习报告</h2><div class="rv-empty">还没有报告。每晚 21:00 自动生成，完成练习后次日可查看。</div><div class="rv-nav"><button class="btn" onclick="closeReportView()">关闭</button></div></div>';
+    return;
+  }
+  try{
+    const r=await api('/api/report-view?date='+encodeURIComponent(d));
+    if(r.status===200){ const txt=await r.text(); body.innerHTML='<div class="reportview"><h2>📋 学习报告</h2><div class="rv-date">'+esc(d)+'</div><div class="rv-md">'+renderMd(txt)+'</div>'+reportNav(dates,d)+'</div>'; }
+    else { const e=await r.json().catch(()=>({})); body.innerHTML='<div class="reportview"><h2>📋 学习报告</h2><div class="rv-empty">'+(e.err||'该日暂无报告')+'</div>'+reportNav(dates,d)+'</div>'; }
+  }catch(e){ body.innerHTML='<div class="reportview"><h2>📋 学习报告</h2><div class="rv-empty">加载失败</div></div>'; }
+}
+function reportNav(dates,cur){
+  if(!dates.length) return '<div class="rv-nav"><button class="btn" onclick="closeReportView()">关闭</button></div>';
+  return '<div class="rv-nav">'+dates.map(x=>`<button class="btn ${x===cur?'ghost':''}" onclick="showReport('${x}')">${x}</button>`).join('')+'<button class="btn" onclick="closeReportView()">关闭</button></div>';
+}
+// 简易 markdown 渲染（标题/表格/列表/粗体）
+function renderMd(t){
+  let lines=t.split('\n'); let out=[], inTable=false, inList=false;
+  for(const raw of lines){
+    const line=raw.replace(/\r$/,'');
+    if(/^\|/.test(line)){ if(!inTable){ out.push('<table>'); inTable=true; } 
+      const cells=line.trim().slice(1,-1).split('|').map(c=>c.trim());
+      if(!cells.some(c=>/^-+$/.test(c))) out.push('<tr>'+cells.map((c,i)=>`<${i===0&&!out.join('').match(/<tr>/)?'th':'td'}>${c}</${i===0&&!out.join('').match(/<tr>/)?'th':'td'}>`).join('')+'</tr>');
+      continue;
+    } else if(inTable){ out.push('</table>'); inTable=false; }
+    if(/^\s*[-*] /.test(line)){ if(!inList){ out.push('<ul>'); inList=true; } out.push('<li>'+line.replace(/^\s*[-*] /,'')+'</li>'); continue; }
+    else if(inList){ out.push('</ul>'); inList=false; }
+    if(/^#{1,3}\s/.test(line)){ const lv=line.match(/^#+/)[0].length; out.push(`<h${lv}>`+line.replace(/^#+\s*/,'')+`</h${lv}>`); continue; }
+    if(/^\s*$/.test(line)){ continue; }
+    if(/^\*\*.*\*\*$/.test(line.trim())){ out.push('<p><b>'+line.trim().slice(2,-2)+'</b></p>'); continue; }
+    out.push('<p>'+line+'</p>');
+  }
+  if(inTable) out.push('</table>'); if(inList) out.push('</ul>');
+  return out.join('');
+}
+
 initPC();
-loadSubjects();
+bootAuth();
