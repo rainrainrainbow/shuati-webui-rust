@@ -9,7 +9,12 @@
 <body>
 <header class="topbar">
   <div class="title">国考刷题<small id="subname"></small></div>
-  <div style="display:flex;gap:8px">
+  <div class="topbar-actions">
+    <button class="statbtn" onclick="openMockModal()" title="模拟考试">📝 模考</button>
+    <button class="statbtn ghostbtn" onclick="startTargeted()" title="针对性刷题">🎯 针对性</button>
+    <button class="statbtn ghostbtn" onclick="openFilter()" title="筛选">⚙️ 筛选</button>
+    <button class="statbtn ghostbtn" onclick="openDeadline()" title="考试日期">⏰ 截止</button>
+    <span id="examdl" class="examdl"></span>
     <button class="statbtn ghostbtn" id="pctoggle" onclick="togglePC()">💻 PC</button>
     <button class="statbtn" onclick="showReport()">📋 报告</button>
     <button class="statbtn" onclick="showStats()">📊 成绩</button>
@@ -51,6 +56,15 @@
 </div>
 <div id="statpanel" class="statmask" onclick="if(event.target===this)closeStats()">
   <div class="statpanel"><button class="closebtn" onclick="closeStats()">✕</button><div id="statbody"></div></div>
+</div>
+<div id="mockmask" class="sheetmask" onclick="if(event.target===this)closeMock()">
+  <div class="sheet"><div id="mockbody"></div></div>
+</div>
+<div id="filtermask" class="sheetmask" onclick="if(event.target===this)closeFilter()">
+  <div class="sheet"><div id="filterbody"></div></div>
+</div>
+<div id="dlmask" class="sheetmask" onclick="if(event.target===this)closeDeadline()">
+  <div class="sheet"><div id="dlbody"></div></div>
 </div>
 <footer id="foot"></footer>
 <div id="toast" class="toast"></div>
