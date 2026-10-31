@@ -291,6 +291,75 @@ fn mark_done(username: &str, answers: &serde_json::Map<String, Value>, bank: &Ba
     if changed { save_done(&path, &done); }
 }
 
+// ---- 申论 AI 评分：提交/查询/评分 ----
+// 每用户数据目录 users/<u>/shenlun/<submission_id>.json
+// 记录：{id,qid,text,file,submitted_at,status:pending|graded,score?,feedback?,graded_at?}
+fn shenlun_dir(username: &str) -> PathBuf {
+    let d = user_dir(username).join("shenlun");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+fn read_shenlun_submissions(username: &str) -> Vec<Value> {
+    let dir = user_dir(username).join("shenlun");
+    let mut list: Vec<Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if e.path().extension().map(|x| x == "json").unwrap_or(false) {
+                if let Ok(s) = std::fs::read_to_string(e.path()) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&s) { list.push(v); }
+                }
+            }
+        }
+    }
+    list.sort_by(|a, b| b["submitted_at"].as_u64().unwrap_or(0).cmp(&a["submitted_at"].as_u64().unwrap_or(0)));
+    list
+}
+// 跨用户查找提交（供评分 cron 用）：返回 (username, 文件路径, 记录)
+fn find_shenlun_global(sub_id: &str) -> Option<(String, PathBuf, Value)> {
+    let users_dir = data_root().join("users");
+    let rd = std::fs::read_dir(&users_dir).ok()?;
+    for e in rd.flatten() {
+        let u = e.file_name().to_string_lossy().to_string();
+        let sp = e.path().join("shenlun").join(format!("{}.json", sub_id));
+        if sp.exists() {
+            if let Ok(s) = std::fs::read_to_string(&sp) {
+                if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                    return Some((u, sp, v));
+                }
+            }
+        }
+    }
+    None
+}
+// 列出所有 pending 提交（跨用户，供 AI 评分 cron）
+fn list_shenlun_pending() -> Vec<Value> {
+    let users_dir = data_root().join("users");
+    let mut out: Vec<Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&users_dir) {
+        for e in rd.flatten() {
+            let u = e.file_name().to_string_lossy().to_string();
+            let sl = e.path().join("shenlun");
+            if let Ok(sd) = std::fs::read_dir(&sl) {
+                for f in sd.flatten() {
+                    if f.path().extension().map(|x| x == "json").unwrap_or(false) {
+                        if let Ok(s) = std::fs::read_to_string(f.path()) {
+                            if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                                if v["status"].as_str().unwrap_or("") == "pending" {
+                                    let mut rec = v.clone();
+                                    rec["username"] = json!(u);
+                                    out.push(rec);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b["submitted_at"].as_u64().unwrap_or(0).cmp(&a["submitted_at"].as_u64().unwrap_or(0)));
+    out
+}
+
 fn text_response(code: u16, content_type: &str, body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     Response::from_data(body.into_bytes())
         .with_status_code(code)
@@ -972,6 +1041,102 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let v = json!({"guokao": g, "shengkao": s});
             let _ = std::fs::write(user_file(&username, "exam.json"), serde_json::to_string_pretty(&v).unwrap_or_default());
             let _ = request.respond(json_response(200, &json!({"ok": true, "guokao": g, "shengkao": s})));
+        }
+        // ---- 申论 AI 评分 ----
+        ("POST", "/api/shenlun/submit") => {
+            let mut body = String::new();
+            let _ = request.as_reader().read_to_string(&mut body);
+            let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            let qid = p["qid"].as_str().unwrap_or("").to_string();
+            let text = p["text"].as_str().unwrap_or("").to_string();
+            let file = p["file"].as_str().unwrap_or("").to_string();
+            // 校验：必须是申论（essay）题
+            match bank.by_id.get(&qid) {
+                Some(q) if q.qtype == "essay" => {}
+                _ => { let _ = request.respond(json_response(400, &json!({"ok": false, "err": "非申论题"}))); return; }
+            }
+            if text.trim().is_empty() && file.trim().is_empty() {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "作答内容不能为空"})));
+                return;
+            }
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let sub_id = format!("sl-{}-{:08x}", now, rng_next() as u32);
+            let rec = json!({
+                "id": sub_id, "qid": qid, "text": text, "file": file,
+                "submitted_at": now, "status": "pending",
+            });
+            let _ = std::fs::write(shenlun_dir(&username).join(format!("{}.json", sub_id)),
+                serde_json::to_string_pretty(&rec).unwrap_or_default());
+            let _ = request.respond(json_response(200, &json!({"ok": true, "submission_id": sub_id})));
+        }
+        ("GET", "/api/shenlun/submissions") => {
+            let list = read_shenlun_submissions(&username);
+            // 附上题干摘要（便于前端展示）
+            let out: Vec<Value> = list.iter().map(|s| {
+                let qid = s["qid"].as_str().unwrap_or("").to_string();
+                let stem = bank.by_id.get(&qid).map(|q| q.stem.chars().take(60).collect::<String>()).unwrap_or_default();
+                json!({
+                    "id": s["id"], "qid": qid, "stem": stem,
+                    "status": s["status"].as_str().unwrap_or("pending"),
+                    "score": s.get("score").cloned().unwrap_or(Value::Null),
+                    "feedback": s.get("feedback").cloned().unwrap_or(Value::Null),
+                    "submitted_at": s["submitted_at"],
+                })
+            }).collect();
+            let _ = request.respond(json_response(200, &json!({"submissions": out})));
+        }
+        ("GET", "/api/shenlun/pending") => {
+            let list = list_shenlun_pending();
+            // 附上题干/给定资料摘要（供 AI 评分参考）
+            let out: Vec<Value> = list.iter().map(|s| {
+                let qid = s["qid"].as_str().unwrap_or("").to_string();
+                let q = bank.by_id.get(&qid);
+                let mut rec = s.clone();
+                rec["stem"] = json!(q.map(|qq| qq.stem.clone()).unwrap_or_default());
+                rec["material"] = json!(q.map(|qq| qq.material.chars().take(2000).collect::<String>()).unwrap_or_default());
+                rec["reference"] = json!(q.map(|qq| qq.reference.clone()).unwrap_or_default());
+                rec
+            }).collect();
+            let _ = request.respond(json_response(200, &json!({"pending": out, "count": out.len()})));
+        }
+        ("POST", "/api/shenlun/grade") => {
+            let mut body = String::new();
+            let _ = request.as_reader().read_to_string(&mut body);
+            let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            let sub_id = p["submission_id"].as_str().unwrap_or("").to_string();
+            if sub_id.is_empty() {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "缺少 submission_id"})));
+                return;
+            }
+            match find_shenlun_global(&sub_id) {
+                Some((_u, path, mut rec)) => {
+                    let score = p.get("score").cloned().unwrap_or(Value::Null);
+                    let feedback = p.get("feedback").cloned().unwrap_or(Value::Null);
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    rec["status"] = json!("graded");
+                    rec["score"] = score;
+                    rec["feedback"] = feedback;
+                    rec["graded_at"] = json!(now);
+                    let _ = std::fs::write(&path, serde_json::to_string_pretty(&rec).unwrap_or_default());
+                    let _ = request.respond(json_response(200, &json!({"ok": true, "submission_id": sub_id, "status": "graded"})));
+                }
+                None => { let _ = request.respond(json_response(404, &json!({"ok": false, "err": "提交不存在"}))); }
+            }
+        }
+        ("GET", "/api/shenlun/grade") => {
+            let sub_id = url.split('?').nth(1)
+                .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("submission_id=").map(|v| v.to_string())))
+                .unwrap_or_default();
+            if sub_id.is_empty() {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "缺少 submission_id"})));
+                return;
+            }
+            match find_shenlun_global(&sub_id) {
+                Some((u, _path, rec)) => {
+                    let _ = request.respond(json_response(200, &json!({"ok": true, "submission": rec, "username": u})));
+                }
+                None => { let _ = request.respond(json_response(404, &json!({"ok": false, "err": "提交不存在"}))); }
+            }
         }
         _ => { let _ = request.respond(text_response(404, "text/plain; charset=utf-8", "not found".to_string())); }
     }
