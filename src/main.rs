@@ -113,6 +113,7 @@ impl Bank {
                 json!({
                     "id": q.id, "module": q.module, "type": q.qtype,
                     "stem": q.stem, "options": q.options, "material": q.material,
+                    "reference": q.reference,
                     "difficulty": q.difficulty,
                 })
             })
@@ -264,6 +265,32 @@ fn save_daily(path: &std::path::Path, m: &DailyMap) {
     }
 }
 
+// ---- 已刷题目（每用户 done.json：已作答客观题 qid 数组）----
+fn load_done(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_done(path: &std::path::Path, v: &[String]) {
+    if let Ok(s) = serde_json::to_string(v) {
+        let _ = std::fs::write(path, s);
+    }
+}
+// 判分后把作答的客观题 qid 追加进 done.json（去重）
+fn mark_done(username: &str, answers: &serde_json::Map<String, Value>, bank: &Bank) {
+    let path = user_file(username, "done.json");
+    let mut done = load_done(&path);
+    let mut changed = false;
+    for qid in answers.keys() {
+        if let Some(q) = bank.by_id.get(qid) {
+            if q.qtype == "essay" { continue; }
+            if !done.contains(qid) { done.push(qid.clone()); changed = true; }
+        }
+    }
+    if changed { save_done(&path, &done); }
+}
+
 fn text_response(code: u16, content_type: &str, body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     Response::from_data(body.into_bytes())
         .with_status_code(code)
@@ -297,6 +324,20 @@ fn shuffle_take(pool: &mut Vec<Q>, n: usize) -> Vec<Q> {
     }
     pool.truncate(n.min(len));
     pool.to_vec()
+}
+// 按 module 配比抽题：每个 module 抽 target 道（缺题少抽并记录 note）
+fn draw_by_module(pool: &mut Vec<Q>, targets: &[(String, usize)]) -> (Vec<Q>, Vec<String>) {
+    let mut picked = Vec::new();
+    let mut notes = Vec::new();
+    for (module, n) in targets {
+        let mut sub: Vec<Q> = pool.iter()
+            .filter(|q| &q.module == module && q.qtype != "essay" && !q.options.is_empty())
+            .cloned().collect();
+        let take = (*n).min(sub.len());
+        if take < *n { notes.push(format!("{} 缺题（需{}，仅{}）", module, n, sub.len())); }
+        picked.extend(shuffle_take(&mut sub, take));
+    }
+    (picked, notes)
 }
 
 fn main() {
@@ -353,13 +394,32 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             return;
         }
         ("GET", "/api/questions") => {
-            let qs: Vec<Value> = request.url().split('?').nth(1)
-                .map(|q| q.split('&').find_map(|kv| {
-                    let mut it = kv.split('='); let k = it.next().unwrap_or(""); let v = it.next().unwrap_or("");
-                    if k == "subject" { Some(v) } else { None }
-                })).flatten()
-                .map(|s| bank.public_questions(s))
-                .unwrap_or_else(|| bank.public_questions("xingce"));
+            let mut subject = "xingce".to_string();
+            let mut status = "all".to_string();
+            for kv in request.url().split('?').nth(1).unwrap_or("").split('&') {
+                let mut it = kv.split('=');
+                let k = it.next().unwrap_or(""); let v = it.next().unwrap_or("");
+                if k == "subject" { subject = v.to_string(); }
+                if k == "status" { status = v.to_string(); }
+            }
+            let mut qs = bank.public_questions(&subject);
+            if status == "undone" || status == "done" {
+                if let Some(user) = auth_user(&request, sessions) {
+                    let done = load_done(&user_file(&user, "done.json"));
+                    let done_ids: std::collections::HashSet<String> = done.into_iter().collect();
+                    if status == "undone" {
+                        qs = qs.into_iter().filter(|q| {
+                            let id = q["id"].as_str().unwrap_or("");
+                            !done_ids.contains(id)
+                        }).collect();
+                    } else {
+                        qs = qs.into_iter().filter(|q| {
+                            let id = q["id"].as_str().unwrap_or("");
+                            done_ids.contains(id)
+                        }).collect();
+                    }
+                }
+            }
             let _ = request.respond(json_response(200, &json!({"questions": qs})));
             return;
         }
@@ -526,6 +586,8 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                     save_daily(&daily_path, &dl);
                 }
             }
+            // 记录已刷客观题（供 undone/done 过滤）
+            mark_done(&username, &answers, bank);
             let _ = request.respond(json_response(200, &json!({
                 "total": total, "objective_total": obj_total,
                 "objective_correct": obj_correct, "score": pct, "results": results,
@@ -586,28 +648,51 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let qtype = qs.split('&').find_map(|kv| kv.strip_prefix("type=").map(|v| v.to_string()))
                 .unwrap_or_else(|| "guokao".to_string());
             let count: usize = qs.split('&').find_map(|kv| kv.strip_prefix("count=").and_then(|v| v.parse().ok())).unwrap_or(0);
-            let pool_subjects: Vec<String> = if qtype == "shengkao" {
-                // 广东省考真题：subject id 以 gd 开头（gd2016-gd2026）
-                bank.subjects.iter().filter(|s| s.id.starts_with("gd")).map(|s| s.id.clone()).collect()
-            } else {
-                vec!["zt2019".into(), "zt2020".into(), "zt2021".into(), "zt2022".into(), "zt2023".into(),
-                     "changshi".into(), "yanyu".into(), "shuliang".into(), "panduan".into(), "ziliao".into()]
-            };
-            if qtype == "shengkao" && pool_subjects.is_empty() {
-                let _ = request.respond(json_response(200, &json!({"ok": false, "err": "暂无省考题"})));
-                return;
-            }
-            let mut pool: Vec<Q> = bank.questions.iter()
-                .filter(|qq| pool_subjects.contains(&qq.subject) && qq.qtype != "essay" && !qq.options.is_empty())
-                .cloned().collect();
-            if pool.is_empty() {
-                let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足，无法组卷"})));
-                return;
-            }
             let duration_min = if qtype == "shengkao" { 100 } else { 120 };
-            let n = if count > 0 { count } else { duration_min as usize };
-            let take_n = n.min(pool.len());
-            let picked = shuffle_take(&mut pool, take_n);
+            let (picked, notes): (Vec<Q>, Vec<String>) = if qtype == "shengkao" {
+                // 广东省考：按年份结构配比抽题（默认约 100 题）
+                let mut pool: Vec<Q> = bank.questions.iter()
+                    .filter(|qq| qq.subject.starts_with("gd") && qq.qtype != "essay" && !qq.options.is_empty())
+                    .cloned().collect();
+                if pool.is_empty() {
+                    let _ = request.respond(json_response(200, &json!({"ok": false, "err": "暂无省考题"})));
+                    return;
+                }
+                let want = if count > 0 { count } else { 100 };
+                let mut modcnt: HashMap<String, usize> = HashMap::new();
+                for q in &pool { *modcnt.entry(q.module.clone()).or_default() += 1; }
+                let total: usize = pool.len();
+                let mut targets: Vec<(String, usize)> = Vec::new();
+                for (m, c) in &modcnt {
+                    let t = ((*c as f64 * want as f64 / total as f64).round()) as usize;
+                    if t > 0 { targets.push((m.clone(), t)); }
+                }
+                draw_by_module(&mut pool, &targets)
+            } else {
+                // 国考行测：常识20+言语40+数量15+判断40+资料20=135题
+                let base: [(&str, f64); 5] = [("changshi", 20.0), ("yanyu", 40.0), ("shuliang", 15.0), ("panduan", 40.0), ("ziliao", 20.0)];
+                let scale = if count > 0 { count as f64 / 135.0 } else { 1.0 };
+                let mut targets: Vec<(String, usize)> = Vec::new();
+                for (sid, bn) in base {
+                    let n = (bn * scale).round() as usize;
+                    if n > 0 { targets.push((sid.to_string(), n)); }
+                }
+                let mut picked: Vec<Q> = Vec::new();
+                let mut notes: Vec<String> = Vec::new();
+                for (sid, n) in &targets {
+                    let mut sub: Vec<Q> = bank.questions.iter()
+                        .filter(|qq| &qq.subject == sid && qq.qtype != "essay" && !qq.options.is_empty())
+                        .cloned().collect();
+                    let take = (*n).min(sub.len());
+                    if take < *n { notes.push(format!("{} 缺题（需{}，仅{}）", sid, n, sub.len())); }
+                    picked.extend(shuffle_take(&mut sub, take));
+                }
+                if picked.is_empty() {
+                    let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足，无法组卷"})));
+                    return;
+                }
+                (picked, notes)
+            };
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let deadline_ts = now + duration_min as u64 * 60;
             let paper_id = format!("{}-{}", qtype, now);
@@ -618,7 +703,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let active = json!({
                 "ok": true, "paper_id": paper_id, "type": qtype, "count": picked.len(),
                 "duration_min": duration_min, "deadline_ts": deadline_ts,
-                "questions": qs_out,
+                "questions": qs_out, "notes": notes,
             });
             let md = user_dir(&username).join("mocks");
             let _ = std::fs::create_dir_all(&md);
@@ -696,6 +781,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 }
                 save_daily(&daily_path, &dl);
             }
+            mark_done(&username, &answers, bank);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let rec = json!({
                 "paper_id": paper_id, "type": mtype, "date": date, "score": pct,
