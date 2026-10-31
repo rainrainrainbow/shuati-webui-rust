@@ -5,6 +5,8 @@ let MODE='normal';
 let CAT='全部', SEARCH='';
 let PCMODE=false;
 let RAW_QS=[], FILTER={module:'',difficulty:0};   // 筛选（模块/难度）
+let QSTATUS='undone';                              // 状态：未刷/已刷/全部
+const STATUSES=[['undone','未刷'],['done','已刷'],['all','全部']];
 let MOCK=null, MOCK_ACTIVE=false, MOCK_TIMER=null; // 模考状态
 let TARGETED=false, TARGETED_NOTE='';              // 针对性刷题状态
 let EXAMS={guokao:'',shengkao:''};                 // 考试截止日期
@@ -144,6 +146,17 @@ function renderModebar(){
     mb.appendChild(b);
   });
 }
+// ---- 状态切换（未刷/已刷/全部）----
+function renderStatusbar(){
+  const sb=$('#statusbar'); if(!sb) return;
+  if(MOCK_ACTIVE||TARGETED){ sb.innerHTML=''; return; }
+  sb.innerHTML='<span class="slabel">状态</span>'+STATUSES.map(([id,label])=>
+    `<button class="statusbtn ${QSTATUS===id?'active':''}" onclick="setStatus('${id}')">${label}</button>`).join('');
+}
+function setStatus(s){
+  if(QSTATUS===s) return;
+  QSTATUS=s; renderStatusbar(); loadQuiz();
+}
 function shuffleArr(a){ const x=a.slice(); for(let i=x.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[x[i],x[j]]=[x[j],x[i]];} return x; }
 
 // ---- PC 模式（宽屏两栏：左题目，右侧答题卡面板）----
@@ -208,6 +221,7 @@ async function loadSubjects(){
   renderCatbar();
   renderSubjects();
   renderModebar();
+  renderStatusbar();
   CUR=SUBJECTS[0].id; loadQuiz();
 }
 function cats(){ return ['全部',...new Set(SUBJECTS.map(s=>catOf(s)))]; }
@@ -259,8 +273,9 @@ function renderSubjects(){
 async function loadQuiz(){
   MOCK_ACTIVE=false; TARGETED=false; TARGETED_NOTE=''; stopMockTimer();
   if(!SUBJECTS.some(s=>s.id===CUR)) CUR=SUBJECTS[0]?SUBJECTS[0].id:'';
+  renderStatusbar();
   GRADED=false; ANSWERS={}; RESULTS={}; IDX=0;
-  const d=await (await api('/api/questions?subject='+CUR)).json();
+  const d=await (await api('/api/questions?subject='+CUR+'&status='+QSTATUS)).json();
   RAW_QS=await applyMode(d.questions);
   QS=applyFilter(RAW_QS);
   const sub=SUBJECTS.find(s=>s.id===CUR);
@@ -279,6 +294,51 @@ function diffBadge(d){
   const c=d>=5?'#e5484d':d>=4?'#f76b15':'#3b82f6';
   return `<span class="diffbadge" style="background:${c}1a;color:${c}">难度${'★'.repeat(d)}${'☆'.repeat(5-d)}</span>`;
 }
+// ---- 素材渲染（表格 / 图片 / 多行文本）----
+function renderMaterial(t){
+  if(!t) return '';
+  const lines=String(t).split('\n');
+  let out=''; let i=0;
+  while(i<lines.length){
+    const line=lines[i]; const tr=line.trim();
+    if(!tr){ i++; continue; }
+    // markdown 图片 ![alt](url)
+    let m=tr.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
+    if(m){ out+=`<img class="matimg" src="${esc(m[2])}" alt="${esc(m[1]||'')}" loading="lazy">`; i++; continue; }
+    // 裸 <img src=...>
+    if(/^<img[^>]+src=/i.test(tr)){ out+=tr; i++; continue; }
+    // markdown 表格：| a | b | 且下一行为分隔行
+    if(/^\|.*\|$/.test(tr) && i+1<lines.length && /^\|[\s:|-]+\|$/.test(lines[i+1].trim())){
+      const rows=[tr];
+      i+=2;
+      while(i<lines.length && /^\|.*\|$/.test(lines[i].trim())){ rows.push(lines[i].trim()); i++; }
+      out+=renderTable(rows);
+      continue;
+    }
+    // 普通行（保留换行）
+    out+=`<div class="matline">${esc(tr)}</div>`;
+    i++;
+  }
+  return out;
+}
+function renderTable(rows){
+  let h='<table class="mattable">';
+  rows.forEach((r,idx)=>{
+    const cells=r.replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>c.trim());
+    const tag=idx===0?'th':'td';
+    h+='<tr>'+cells.map(c=>`<${tag}>${esc(c)}</${tag}>`).join('')+'</tr>';
+  });
+  return h+'</table>';
+}
+function renderReference(r){
+  if(!r) return '';
+  const s=String(r).trim();
+  if(/^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg)(\?\S*)?$/i.test(s) || /^<img/i.test(s)){
+    return /^<img/i.test(s)? s : `<img class="refimg" src="${esc(s)}" alt="参考图" loading="lazy">`;
+  }
+  return `<div class="matline reftext">${esc(s)}</div>`;
+}
+
 function render(){
   if(!QS.length){
     let hint='该科目暂无题目';
@@ -298,7 +358,8 @@ function render(){
     ${MOCK_ACTIVE&&MOCK?`<div class="mocktimer">⏱ 剩余 <b id="mcount">${fmtRemain(MOCK.deadline_ts)}</b></div>`:''}
     ${TARGETED?`<div class="tarnote">🎯 ${esc(TARGETED_NOTE)}</div>`:''}
     <div class="stem">${esc(q.stem)}</div>`;
-  if(q.material) h+=`<div class="material">${esc(q.material)}</div>`;
+  if(q.material) h+=`<div class="material">${renderMaterial(q.material)}</div>`;
+  if(q.reference) h+=`<div class="reference">${renderReference(q.reference)}</div>`;
   if(isEssay()){
     h+=`<textarea id="essay_${q.id}" placeholder="在此作答（主观题，写完点「查看参考答案」对比）">${esc(ANSWERS[q.id]||'')}</textarea>
       <button class="btn ghost" id="essaybtn_${q.id}" onclick="submitEssay('${q.id}')">${RESULTS[q.id]?'重新查看参考答案':'查看参考答案'}</button>`;
@@ -594,9 +655,9 @@ function stopMockTimer(){ if(MOCK_TIMER){ clearInterval(MOCK_TIMER); MOCK_TIMER=
 function openMockModal(){
   $('#mockbody').innerHTML=`
     <div class="sheethead">📝 模拟考试 <button class="closebtn" onclick="closeMock()">✕</button></div>
-    <p class="hint" style="text-align:left;padding:0">国考：行测 120 分钟（真题 zt2019-zt2023 + 五模块常识/言语/数量/判断/资料）。省考：100 分钟（广东真题）。</p>
-    <div class="mocksel"><button class="btn" onclick="startMock('guokao')">🎯 国考模考（120题 · 120分钟）</button></div>
-    <div class="mocksel"><button class="btn ghost" onclick="startMock('shengkao')">🌏 省考模考（100题 · 100分钟）</button></div>
+    <p class="hint" style="text-align:left;padding:0">国考：行测 135 题 · 120 分钟（常识20+言语40+数量15+判断40+资料20）。省考：约 100 题 · 100 分钟（广东真题按年份结构配比）。</p>
+    <div class="mocksel"><button class="btn" onclick="startMock('guokao')">🎯 国考模考（135题 · 120分钟）</button></div>
+    <div class="mocksel"><button class="btn ghost" onclick="startMock('shengkao')">🌏 省考模考（约100题 · 100分钟）</button></div>
     <div class="mocksel"><button class="btn ghost" onclick="showMockHistory()">📜 模考历史</button></div>`;
   $('#mockmask').classList.add('open');
 }
@@ -610,6 +671,7 @@ async function startMock(type){
   if(!d.ok){ toast(d.err||'组卷失败'); return; }
   MOCK=d; MOCK_ACTIVE=true; TARGETED=false; TARGETED_NOTE=''; CUR='mock';
   RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0; GRADED=false;
+  renderStatusbar();
   $('#subname').textContent=`📝 ${type==='guokao'?'国考':'省考'}模考 · ${d.count}题 · ${d.duration_min}分钟`;
   startMockTimer();
   render();
@@ -652,6 +714,7 @@ async function startTargeted(){
   MOCK_ACTIVE=false; TARGETED=true; MOCK=null; stopMockTimer(); CUR='targeted';
   RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0; GRADED=false;
   TARGETED_NOTE=d.note||'';
+  renderStatusbar();
   $('#subname').textContent='🎯 针对性刷题 · '+QS.length+'题';
   render();
 }
