@@ -616,7 +616,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 "difficulty": qq.difficulty, "type": qq.qtype,
             })).collect();
             let active = json!({
-                "paper_id": paper_id, "type": qtype, "count": picked.len(),
+                "ok": true, "paper_id": paper_id, "type": qtype, "count": picked.len(),
                 "duration_min": duration_min, "deadline_ts": deadline_ts,
                 "questions": qs_out,
             });
