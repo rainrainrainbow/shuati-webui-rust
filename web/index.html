@@ -1,30 +1,17 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>国考刷题 · 行测/申论/计算机岗</title>
+<title>国考刷题</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="title">国考刷题<small id="subname"></small></div>
-  <div class="topbar-actions">
-    <button class="statbtn" onclick="openMockModal()" title="模拟考试">📝 模考</button>
-    <button class="statbtn ghostbtn" onclick="startTargeted()" title="针对性刷题">🎯 针对性</button>
-    <button class="statbtn ghostbtn" onclick="openFilter()" title="筛选">⚙️ 筛选</button>
-    <button class="statbtn ghostbtn" onclick="openDeadline()" title="考试日期">⏰ 截止</button>
-    <span id="examdl" class="examdl"></span>
-    <button class="statbtn ghostbtn" id="pctoggle" onclick="togglePC()">💻 PC</button>
-    <button class="statbtn" onclick="showReport()">📋 报告</button>
-    <button class="statbtn" onclick="showStats()">📊 成绩</button>
-    <button class="statbtn ghostbtn" id="userbtn" onclick="logout()" title="退出登录">👤 <span id="uname"></span></button>
-  </div>
-</header>
-<!-- 登录遮罩 -->
+
+<!-- 登录 -->
 <div id="loginmask" class="loginmask">
   <div class="loginbox">
-    <div class="logintitle">国考刷题 · 登录</div>
+    <div class="logintitle">国考刷题</div>
     <div class="loginsub">行测 / 申论 / 计算机岗 · 每晚 21:00 自动生成学习报告</div>
     <input id="loginuser" class="logininput" placeholder="用户名" autocomplete="username">
     <input id="loginpass" class="logininput" type="password" placeholder="密码" autocomplete="current-password">
@@ -34,41 +21,67 @@
     <button class="loginbtn ghost" onclick="doRegister()">注 册</button>
   </div>
 </div>
-<!-- 报告遮罩 -->
-<div id="reportviewmask" class="sheetmask" onclick="if(event.target===this)closeReportView()">
-  <div class="sheet sheet-wide"><div id="reportviewbody"></div></div>
-</div>
-<div class="catbar" id="catbar"></div>
-<div class="subsearch-wrap"><input id="subsearch" placeholder="🔍 搜索科目…" oninput="onSearch(this.value)"></div>
-<div class="subjects" id="subjects"><p class="hint">加载题库中…</p></div>
-<div class="modebar" id="modebar"></div>
-<div class="statusbar" id="statusbar"></div>
-<main id="quiz"></main>
-<aside id="pcside" class="pcside"><div class="pcside-inner" id="pcsideinner"></div></aside>
-<div id="reportmask" class="sheetmask" onclick="if(event.target===this)closeReport()">
-  <div class="sheet"><div id="reportbody"></div></div>
-</div>
-<div id="answerSheet" class="sheetmask" onclick="if(event.target===this)closeSheet()">
-  <div class="sheet">
-    <div class="sheethead">答题卡 <span id="sheetcnt"></span>
-      <button class="closebtn" onclick="closeSheet()">✕</button></div>
-    <div id="sheetgrid" class="sheetgrid"></div>
+
+<!-- 顶栏 -->
+<header class="topbar">
+  <div class="title">国考刷题<small id="subname">加载中…</small></div>
+  <div class="topbar-actions">
+    <span class="icon-btn" onclick="goDashboard()" title="首页">🏠</span>
+    <span class="icon-btn" id="bellbtn" onclick="quickSrs()" title="到期复习">🔔<sup id="bell-count" class="badge hide"></sup></span>
+    <button class="avatar" id="avatar" onclick="toggleUserMenu()">汉</button>
+    <div id="user-menu" class="dropdown hide">
+      <div class="who">已登录 · <span id="menu-name"></span></div>
+      <div class="divider"></div>
+      <button onclick="openFilter()">⚙️ 筛选 / 指定范围</button>
+      <button onclick="openDeadline()">⏰ 考试倒计时</button>
+      <button onclick="togglePC()">📱 / 💻 切换布局</button>
+      <div class="divider"></div>
+      <button onclick="showStats()">📊 我的数据</button>
+      <button onclick="showReportView()">📋 学习报告</button>
+      <div class="divider"></div>
+      <button onclick="logout()" style="color:var(--bad)">🚪 退出登录</button>
+    </div>
   </div>
+</header>
+
+<!-- 主体：仪表盘 / 题目 二选一渲染 -->
+<main id="dashboard"></main>
+<main id="quiz" style="display:none"></main>
+
+<!-- 答题卡弹层 -->
+<div id="sheetmask" class="sheetmask" onclick="if(event.target===this)closeSheet()">
+  <div class="sheet"><div id="sheetbody"></div></div>
 </div>
-<div id="statpanel" class="statmask" onclick="if(event.target===this)closeStats()">
-  <div class="statpanel"><button class="closebtn" onclick="closeStats()">✕</button><div id="statbody"></div></div>
+<!-- 统计弹层 -->
+<div id="statmask" class="sheetmask" onclick="if(event.target===this)closeStats()">
+  <div class="sheet"><div id="statbody"></div></div>
 </div>
-<div id="mockmask" class="sheetmask" onclick="if(event.target===this)closeMock()">
-  <div class="sheet"><div id="mockbody"></div></div>
-</div>
+<!-- 筛选弹层 -->
 <div id="filtermask" class="sheetmask" onclick="if(event.target===this)closeFilter()">
   <div class="sheet"><div id="filterbody"></div></div>
 </div>
+<!-- 截止日弹层 -->
 <div id="dlmask" class="sheetmask" onclick="if(event.target===this)closeDeadline()">
   <div class="sheet"><div id="dlbody"></div></div>
 </div>
-<footer id="foot"></footer>
+<!-- 报告弹层 -->
+<div id="reportmask" class="sheetmask" onclick="if(event.target===this)closeReportView()">
+  <div class="sheet" style="max-width:720px"><div id="reportviewbody"></div></div>
+</div>
+<!-- 纠错弹层 -->
+<div id="repmask" class="sheetmask" onclick="if(event.target===this)closeReport()">
+  <div class="sheet"><div id="repbody"></div></div>
+</div>
+<!-- 模考弹层 -->
+<div id="mockmask" class="sheetmask" onclick="if(event.target===this)closeMock()">
+  <div class="sheet"><div id="mockbody"></div></div>
+</div>
+
+<aside id="pcside" class="pcside"><div class="pcside-inner" id="pcsideinner"></div></aside>
+
+<div id="foot"></div>
 <div id="toast" class="toast"></div>
+
 <script src="/app.js"></script>
 </body>
 </html>
