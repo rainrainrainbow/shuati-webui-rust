@@ -587,7 +587,8 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 .unwrap_or_else(|| "guokao".to_string());
             let count: usize = qs.split('&').find_map(|kv| kv.strip_prefix("count=").and_then(|v| v.parse().ok())).unwrap_or(0);
             let pool_subjects: Vec<String> = if qtype == "shengkao" {
-                bank.subjects.iter().filter(|s| s.id.starts_with("guangdong")).map(|s| s.id.clone()).collect()
+                // 广东省考真题：subject id 以 gd 开头（gd2016-gd2026）
+                bank.subjects.iter().filter(|s| s.id.starts_with("gd")).map(|s| s.id.clone()).collect()
             } else {
                 vec!["zt2019".into(), "zt2020".into(), "zt2021".into(), "zt2022".into(), "zt2023".into(),
                      "changshi".into(), "yanyu".into(), "shuliang".into(), "panduan".into(), "ziliao".into()]
