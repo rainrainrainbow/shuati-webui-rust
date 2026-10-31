@@ -32,6 +32,8 @@ let MOCK=null, MOCK_ACTIVE=false, MOCK_TIMER=null, MOCK_DEADLINE=0;
 let TARGETED=false, TARGET_NOTE='', FILTER={module:'',difficulty:0};
 let EXAMS={guokao:'',shengkao:''};
 const GRADED=true;
+// 申论 AI 评分状态：SL_SUBS 缓存该用户申论提交列表，按 qid 取最新
+let SL_LOADED=false, SL_SUBS=[], SL_POLL_TIMER=null;
 
 /* ---------- 工具 ---------- */
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -407,7 +409,11 @@ function render(){
   if(isEssay()){
     const r=RESULTS[q.id];
     h+=`<textarea id="essay_${q.id}" placeholder="在此作答，写完点「查看参考答案」对比">${esc(ANSWERS[q.id]||'')}</textarea>
-      <button class="btn ghost" onclick="submitEssay('${q.id}')">${r?'重新查看参考答案':'查看参考答案'}</button>`;
+      <div style="display:flex;gap:8px;margin:12px 0">
+        <button class="btn ghost" onclick="submitEssay('${q.id}')">${r?'重新查看参考答案':'查看参考答案'}</button>
+        <button class="btn" onclick="submitShenlun('${q.id}')">📮 提交AI评分</button>
+      </div>
+      <div id="slstatus_${q.id}"></div>`;
     if(r) h+=`<div class="feedback ok"><div class="fhead">参考答案 / 评分提示</div><div class="fans">${esc(r.reference||'（无）')}</div></div>`;
   }else{
     h+=`<div class="opts">${q.options.map((o,i)=>optHTML(q,o,i)).join('')}</div>`;
@@ -418,6 +424,7 @@ function render(){
     <div class="crumbs" style="padding-top:0;opacity:.85">🏠 <b onclick="goDashboard()">首页</b> › <b onclick="backToSubject()">${esc(subj?subj.name:'')}</b> › <span class="here">${esc(q.module)}</span></div>`;
   $('#quiz').innerHTML=h;
   bindOpts(q); bindEssay(q); renderFoot(no); renderPCside();
+  if(isEssay()) loadShenlunSubs().then(()=>renderShenlunStatus(q.id));
   window.scrollTo({top:0,behavior:'smooth'});
 }
 function optHTML(q,o,i){
@@ -526,6 +533,45 @@ async function submitEssay(qid){
   ANSWERS[qid]=v;
   if(!v.trim()){ toast('请先写下你的作答'); return; }
   await submitOne(qid,v);
+}
+
+/* ---------- 申论 AI 评分 ---------- */
+async function loadShenlunSubs(force){
+  if(SL_LOADED&&!force) return SL_SUBS;
+  try{
+    const r=await api('/api/shenlun/submissions');
+    if(r.status===200){ const d=await r.json(); SL_SUBS=d.submissions||[]; SL_LOADED=true; }
+  }catch(e){}
+  return SL_SUBS;
+}
+function shenlunFor(qid){ return SL_SUBS.find(s=>s.qid===qid); }
+function renderShenlunStatus(qid){
+  const el=document.getElementById('slstatus_'+qid); if(!el) return;
+  const sl=shenlunFor(qid);
+  if(!sl){ el.innerHTML=''; return; }
+  if(sl.status==='graded'){
+    const sc=(sl.score===null||sl.score===undefined)?'—':esc(String(sl.score));
+    const fb=sl.feedback?`<div style="margin-top:6px;color:#334;white-space:pre-wrap;line-height:1.6">${esc(sl.feedback)}</div>`:'';
+    el.innerHTML=`<div style="background:#eefaf0;border:1px solid #b8e2c2;border-radius:10px;padding:10px 12px;margin-top:6px">
+      <b style="color:#1a7f37">📊 AI 评分：${sc} 分</b>${fb}</div>`;
+    if(SL_POLL_TIMER){ clearTimeout(SL_POLL_TIMER); SL_POLL_TIMER=null; }
+  }else{
+    el.innerHTML=`<div style="background:#fff8e6;border:1px solid #f2d98c;border-radius:10px;padding:10px 12px;margin-top:6px;color:#8a6d1a">📮 已提交，AI 评分中…</div>`;
+    if(!SL_POLL_TIMER){
+      SL_POLL_TIMER=setTimeout(async()=>{ SL_POLL_TIMER=null; SL_LOADED=false; await loadShenlunSubs(true); renderShenlunStatus(qid); },15000);
+    }
+  }
+}
+async function submitShenlun(qid){
+  const v=ANSWERS[qid]||($('#essay_'+qid)&&$('#essay_'+qid).value)||'';
+  ANSWERS[qid]=v;
+  if(!v.trim()){ toast('请先写下你的作答'); return; }
+  try{
+    const r=await api('/api/shenlun/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qid,text:v})});
+    const d=await r.json();
+    if(d.ok){ SL_LOADED=false; SL_SUBS=[]; toast('✅ 已提交，等待 AI 评分'); await loadShenlunSubs(true); renderShenlunStatus(qid); }
+    else toast(d.err||'提交失败');
+  }catch(e){ toast('网络错误，请重试'); }
 }
 
 /* ---------- PC 热力图答题卡 ---------- */
