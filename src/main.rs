@@ -340,6 +340,80 @@ fn draw_by_module(pool: &mut Vec<Q>, targets: &[(String, usize)]) -> (Vec<Q>, Ve
     (picked, notes)
 }
 
+// ---- 模考组卷：按试卷类型（paper）配比抽题 ----
+// 国考行测：常识20+言语40+数量15+判断40+资料20=135题（count>0 时按比例缩放）
+fn build_guokao_xingce(bank: &Bank, count: usize) -> (Vec<Q>, Vec<String>) {
+    let base: [(&str, f64); 5] = [("changshi", 20.0), ("yanyu", 40.0), ("shuliang", 15.0), ("panduan", 40.0), ("ziliao", 20.0)];
+    let scale = if count > 0 { count as f64 / 135.0 } else { 1.0 };
+    let mut targets: Vec<(String, usize)> = Vec::new();
+    for (sid, bn) in base {
+        let n = (bn * scale).round() as usize;
+        if n > 0 { targets.push((sid.to_string(), n)); }
+    }
+    let mut picked: Vec<Q> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    for (sid, n) in &targets {
+        let mut sub: Vec<Q> = bank.questions.iter()
+            .filter(|qq| &qq.subject == sid && qq.qtype != "essay" && !qq.options.is_empty())
+            .cloned().collect();
+        let take = (*n).min(sub.len());
+        if take < *n { notes.push(format!("{} 缺题（需{}，仅{}）", sid, n, sub.len())); }
+        picked.extend(shuffle_take(&mut sub, take));
+    }
+    (picked, notes)
+}
+// 按 module 占比抽题（省考行测等单科目池）
+fn build_pool_paper(bank: &Bank, pred: impl Fn(&Q) -> bool, want: usize) -> (Vec<Q>, Vec<String>) {
+    let mut pool: Vec<Q> = bank.questions.iter()
+        .filter(|qq| pred(qq) && qq.qtype != "essay" && !qq.options.is_empty())
+        .cloned().collect();
+    if pool.is_empty() { return (Vec::new(), vec!["题库不足，无法组卷".to_string()]); }
+    let mut modcnt: HashMap<String, usize> = HashMap::new();
+    for q in &pool { *modcnt.entry(q.module.clone()).or_default() += 1; }
+    let total: usize = pool.len();
+    let mut targets: Vec<(String, usize)> = Vec::new();
+    for (m, c) in &modcnt {
+        let t = ((*c as f64 * want as f64 / total as f64).round()) as usize;
+        if t > 0 { targets.push((m.clone(), t)); }
+    }
+    let (picked, mut notes) = draw_by_module(&mut pool, &targets);
+    if picked.is_empty() { notes.push("题库不足，无法组卷".to_string()); }
+    (picked, notes)
+}
+// 多科目等额抽题（国考专业卷：zt* 真题 + zx* 专项各摊 want/科目数）
+fn build_subject_paper(bank: &Bank, subj_ids: &[&str], want: usize) -> (Vec<Q>, Vec<String>) {
+    let mut picked: Vec<Q> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    if subj_ids.is_empty() { notes.push("未指定科目".to_string()); return (picked, notes); }
+    let per = ((want as f64 / subj_ids.len() as f64).round().max(1.0)) as usize;
+    for sid in subj_ids {
+        let mut pool: Vec<Q> = bank.questions.iter()
+            .filter(|qq| &qq.subject == sid && qq.qtype != "essay" && !qq.options.is_empty())
+            .cloned().collect();
+        if pool.is_empty() { continue; }
+        let mut modcnt: HashMap<String, usize> = HashMap::new();
+        for q in &pool { *modcnt.entry(q.module.clone()).or_default() += 1; }
+        let total = pool.len();
+        let mut targets: Vec<(String, usize)> = Vec::new();
+        for (m, c) in &modcnt {
+            let t = ((*c as f64 * per as f64 / total as f64).round()) as usize;
+            if t > 0 { targets.push((m.clone(), t)); }
+        }
+        let (p, mut n) = draw_by_module(&mut pool, &targets);
+        picked.extend(p); notes.append(&mut n);
+    }
+    (picked, notes)
+}
+// 申论（essay 题）抽题：slzt* + slgongwen/sldanyi/slwenzhang/slzonghe
+fn build_shenlun(bank: &Bank, want: usize) -> (Vec<Q>, Vec<String>) {
+    let mut pool: Vec<Q> = bank.questions.iter()
+        .filter(|qq| qq.qtype == "essay"
+            && (qq.subject.starts_with("slzt") || qq.subject.starts_with("sl") || qq.subject == "shenlun"))
+        .cloned().collect();
+    if pool.is_empty() { return (Vec::new(), vec!["暂无申论题".to_string()]); }
+    (shuffle_take(&mut pool, want), Vec::new())
+}
+
 fn main() {
     let mut port: u16 = 8085;
     let mut bind: String = "0.0.0.0".to_string();
@@ -647,61 +721,63 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let qs = url.split('?').nth(1).unwrap_or("");
             let qtype = qs.split('&').find_map(|kv| kv.strip_prefix("type=").map(|v| v.to_string()))
                 .unwrap_or_else(|| "guokao".to_string());
+            let paper = qs.split('&').find_map(|kv| kv.strip_prefix("paper=").map(|v| v.to_string()))
+                .unwrap_or_else(|| "xingce".to_string());
             let count: usize = qs.split('&').find_map(|kv| kv.strip_prefix("count=").and_then(|v| v.parse().ok())).unwrap_or(0);
-            let duration_min = if qtype == "shengkao" { 100 } else { 120 };
+            // 各卷默认时长
+            let duration_min: u64 = if qtype == "shengkao" {
+                if paper == "shenlun" { 150 } else { 100 }
+            } else {
+                if paper == "shenlun" { 180 } else if paper == "zhuanye" { 120 } else { 120 }
+            };
             let (picked, notes): (Vec<Q>, Vec<String>) = if qtype == "shengkao" {
-                // 广东省考：按年份结构配比抽题（默认约 100 题）
-                let mut pool: Vec<Q> = bank.questions.iter()
-                    .filter(|qq| qq.subject.starts_with("gd") && qq.qtype != "essay" && !qq.options.is_empty())
-                    .cloned().collect();
-                if pool.is_empty() {
-                    let _ = request.respond(json_response(200, &json!({"ok": false, "err": "暂无省考题"})));
-                    return;
+                if paper == "shenlun" {
+                    // 省考申论：从广东省考申论科抽；暂无则回退国考申论卷并返回 note
+                    let gd_pool: Vec<Q> = bank.questions.iter()
+                        .filter(|qq| qq.subject.starts_with("gd") && qq.qtype == "essay")
+                        .cloned().collect();
+                    if gd_pool.is_empty() {
+                        let want = if count > 0 { count } else { 4 };
+                        let (mut p, mut n) = build_shenlun(bank, want);
+                        n.insert(0, "省考申论题库暂未入库，已回退为国考申论卷".to_string());
+                        (p, n)
+                    } else {
+                        let want = if count > 0 { count } else { 4 };
+                        let mut pool = gd_pool;
+                        (shuffle_take(&mut pool, want), Vec::new())
+                    }
+                } else {
+                    // 省考行测：按年份结构配比抽题（默认约 100 题）
+                    let want = if count > 0 { count } else { 100 };
+                    build_pool_paper(bank, |qq| qq.subject.starts_with("gd"), want)
                 }
+            } else if paper == "zhuanye" {
+                // 国考专业卷：zt2019-zt2023 + zx* 专项 等额抽题
                 let want = if count > 0 { count } else { 100 };
-                let mut modcnt: HashMap<String, usize> = HashMap::new();
-                for q in &pool { *modcnt.entry(q.module.clone()).or_default() += 1; }
-                let total: usize = pool.len();
-                let mut targets: Vec<(String, usize)> = Vec::new();
-                for (m, c) in &modcnt {
-                    let t = ((*c as f64 * want as f64 / total as f64).round()) as usize;
-                    if t > 0 { targets.push((m.clone(), t)); }
-                }
-                draw_by_module(&mut pool, &targets)
+                let ids: [&str; 13] = ["zt2019","zt2020","zt2021","zt2022","zt2023",
+                    "zxsj","zxdb","zxwl","zxos","zxaq","zxrg","zxzc","zxdx"];
+                build_subject_paper(bank, &ids, want)
+            } else if paper == "shenlun" {
+                // 国考申论：slzt* + slgongwen/sldanyi/slwenzhang/slzonghe（essay 题）
+                let want = if count > 0 { count } else { 5 };
+                build_shenlun(bank, want)
             } else {
                 // 国考行测：常识20+言语40+数量15+判断40+资料20=135题
-                let base: [(&str, f64); 5] = [("changshi", 20.0), ("yanyu", 40.0), ("shuliang", 15.0), ("panduan", 40.0), ("ziliao", 20.0)];
-                let scale = if count > 0 { count as f64 / 135.0 } else { 1.0 };
-                let mut targets: Vec<(String, usize)> = Vec::new();
-                for (sid, bn) in base {
-                    let n = (bn * scale).round() as usize;
-                    if n > 0 { targets.push((sid.to_string(), n)); }
-                }
-                let mut picked: Vec<Q> = Vec::new();
-                let mut notes: Vec<String> = Vec::new();
-                for (sid, n) in &targets {
-                    let mut sub: Vec<Q> = bank.questions.iter()
-                        .filter(|qq| &qq.subject == sid && qq.qtype != "essay" && !qq.options.is_empty())
-                        .cloned().collect();
-                    let take = (*n).min(sub.len());
-                    if take < *n { notes.push(format!("{} 缺题（需{}，仅{}）", sid, n, sub.len())); }
-                    picked.extend(shuffle_take(&mut sub, take));
-                }
-                if picked.is_empty() {
-                    let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足，无法组卷"})));
-                    return;
-                }
-                (picked, notes)
+                build_guokao_xingce(bank, count)
             };
+            if picked.is_empty() {
+                let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足，无法组卷", "notes": notes})));
+                return;
+            }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let deadline_ts = now + duration_min as u64 * 60;
-            let paper_id = format!("{}-{}", qtype, now);
+            let paper_id = format!("{}-{}-{}", qtype, paper, now);
             let qs_out: Vec<Value> = picked.iter().map(|qq| json!({
                 "id": qq.id, "stem": qq.stem, "options": qq.options, "module": qq.module,
-                "difficulty": qq.difficulty, "type": qq.qtype,
+                "difficulty": qq.difficulty, "type": qq.qtype, "material": qq.material,
             })).collect();
             let active = json!({
-                "ok": true, "paper_id": paper_id, "type": qtype, "count": picked.len(),
+                "ok": true, "paper_id": paper_id, "type": qtype, "paper": paper, "count": picked.len(),
                 "duration_min": duration_min, "deadline_ts": deadline_ts,
                 "questions": qs_out, "notes": notes,
             });
@@ -723,6 +799,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let active: Value = std::fs::read_to_string(&active_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
             let active_paper = active["paper_id"].as_str().unwrap_or("");
             let mtype = active["type"].as_str().unwrap_or("guokao").to_string();
+            let mpaper = active["paper"].as_str().unwrap_or("").to_string();
             if !paper_id.is_empty() && !active_paper.is_empty() && active_paper != paper_id {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "试卷已变更或已提交"})));
                 return;
@@ -784,7 +861,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             mark_done(&username, &answers, bank);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let rec = json!({
-                "paper_id": paper_id, "type": mtype, "date": date, "score": pct,
+                "paper_id": paper_id, "type": mtype, "paper": mpaper, "date": date, "score": pct,
                 "objective_total": obj_total, "objective_correct": obj_correct,
                 "results": results, "graded": true, "count": total, "ts": now,
             });
