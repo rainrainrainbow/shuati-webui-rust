@@ -460,6 +460,10 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
         (_, "/app.js") => { let _ = request.respond(text_response(200, "application/javascript; charset=utf-8", APP_JS.to_string())); return; }
         (_, "/style.css") => { let _ = request.respond(text_response(200, "text/css; charset=utf-8", STYLE_CSS.to_string())); return; }
         ("GET", "/api/subjects") => {
+            if auth_user(&request, sessions).is_none() {
+                let _ = request.respond(text_response(401, "text/plain; charset=utf-8", "unauthorized".to_string()));
+                return;
+            }
             let subs: Vec<Value> = bank.subjects.iter().map(|s| json!({
                 "id": s.id, "name": s.name, "modules": s.modules,
                 "count": bank.questions.iter().filter(|q| q.subject == s.id).count(),
@@ -468,6 +472,10 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             return;
         }
         ("GET", "/api/questions") => {
+            if auth_user(&request, sessions).is_none() {
+                let _ = request.respond(text_response(401, "text/plain; charset=utf-8", "unauthorized".to_string()));
+                return;
+            }
             let mut subject = "xingce".to_string();
             let mut status = "all".to_string();
             for kv in request.url().split('?').nth(1).unwrap_or("").split('&') {
