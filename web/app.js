@@ -158,8 +158,10 @@ function catOf(s){
 }
 function cats(){ return ['全部',...new Set(SUBJECTS.map(s=>catOf(s)))]; }
 async function loadSubjects(){
-  const d=await (await api('/api/subjects')).json();
-  SUBJECTS=d.subjects||[];
+  try{
+    const d=await (await api('/api/subjects')).json();
+    SUBJECTS=d.subjects||[];
+  }catch(e){ toast('加载科目失败，请刷新重试'); }
   showDashboard();
 }
 function SUBJCOUNT(c){ return SUBJECTS.filter(s=>catOf(s)===c).length; }
@@ -284,7 +286,7 @@ async function loadQuiz(post){
   catch(e){ toast('加载题目失败'); return; }
   RAW_QS=await applyMode(d.questions||[]);
   QS=applyFilter(RAW_QS);
-  if(post){ post(); return; }
+  if(post){ post(); }
   enterQuiz();
 }
 function applyFilter(qs){
@@ -310,8 +312,12 @@ async function applyMode(qs){
 function enterQuiz(){
   VIEW='quiz'; $('#dashboard').style.display='none'; $('#quiz').style.display='block';
   const subj=SUBJECTS.find(s=>s.id===CUR);
-  let label=(subj?subj.name:'')+' · '+QS.length+' 题';
-  const ml=MODES.find(m=>m[0]===MODE)?.[1]; if(ml) label+=' · '+ml;
+  let label;
+  if(TARGETED){ label='🎯 针对性刷题 · '+QS.length+'题'; }
+  else{
+    label=(subj?subj.name:'')+' · '+QS.length+' 题';
+    const ml=MODES.find(m=>m[0]===MODE)?.[1]; if(ml) label+=' · '+ml;
+  }
   $('#subname').textContent=(USERNAME?' · '+USERNAME:'')+' · '+label;
   if(!QS.length){ renderEmpty(); return; }
   render();
