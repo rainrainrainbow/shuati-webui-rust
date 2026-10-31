@@ -4,7 +4,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Response, Server};
 
@@ -270,6 +272,32 @@ fn text_response(code: u16, content_type: &str, body: String) -> tiny_http::Resp
 }
 fn json_response(code: u16, v: &Value) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     text_response(code, "application/json; charset=utf-8", v.to_string())
+}
+
+// ---- 随机辅助（xorshift64，无额外依赖）----
+static RNG_STATE: AtomicU64 = AtomicU64::new(0x9E3779B97F4A7C15);
+fn rng_next() -> u64 {
+    let mut x = RNG_STATE.load(Ordering::Relaxed);
+    if x == 0 {
+        x = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E3779B97F4A7C15) | 1;
+    }
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    RNG_STATE.store(x, Ordering::Relaxed);
+    x
+}
+fn shuffle_take(pool: &mut Vec<Q>, n: usize) -> Vec<Q> {
+    let len = pool.len();
+    for i in (1..len).rev() {
+        let j = (rng_next() % (i as u64 + 1)) as usize;
+        pool.swap(i, j);
+    }
+    pool.truncate(n.min(len));
+    pool.to_vec()
 }
 
 fn main() {
@@ -552,6 +580,225 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             dates.sort();
             dates.reverse();
             let _ = request.respond(json_response(200, &json!({"dates": dates})));
+        }
+        // ---- 模考组卷 / 交卷 / 历史 ----
+        ("GET", "/api/mock/generate") => {
+            let qs = url.split('?').nth(1).unwrap_or("");
+            let qtype = qs.split('&').find_map(|kv| kv.strip_prefix("type=").map(|v| v.to_string()))
+                .unwrap_or_else(|| "guokao".to_string());
+            let count: usize = qs.split('&').find_map(|kv| kv.strip_prefix("count=").and_then(|v| v.parse().ok())).unwrap_or(0);
+            let pool_subjects: Vec<String> = if qtype == "shengkao" {
+                bank.subjects.iter().filter(|s| s.id.starts_with("guangdong")).map(|s| s.id.clone()).collect()
+            } else {
+                vec!["zt2019".into(), "zt2020".into(), "zt2021".into(), "zt2022".into(), "zt2023".into(),
+                     "changshi".into(), "yanyu".into(), "shuliang".into(), "panduan".into(), "ziliao".into()]
+            };
+            if qtype == "shengkao" && pool_subjects.is_empty() {
+                let _ = request.respond(json_response(200, &json!({"ok": false, "err": "暂无省考题"})));
+                return;
+            }
+            let mut pool: Vec<Q> = bank.questions.iter()
+                .filter(|qq| pool_subjects.contains(&qq.subject) && qq.qtype != "essay" && !qq.options.is_empty())
+                .cloned().collect();
+            if pool.is_empty() {
+                let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足，无法组卷"})));
+                return;
+            }
+            let duration_min = if qtype == "shengkao" { 100 } else { 120 };
+            let n = if count > 0 { count } else { duration_min as usize };
+            let picked = shuffle_take(&mut pool, n.min(pool.len()));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let deadline_ts = now + duration_min as u64 * 60;
+            let paper_id = format!("{}-{}", qtype, now);
+            let qs_out: Vec<Value> = picked.iter().map(|qq| json!({
+                "id": qq.id, "stem": qq.stem, "options": qq.options, "module": qq.module,
+                "difficulty": qq.difficulty, "type": qq.qtype,
+            })).collect();
+            let active = json!({
+                "paper_id": paper_id, "type": qtype, "count": picked.len(),
+                "duration_min": duration_min, "deadline_ts": deadline_ts,
+                "questions": qs_out,
+            });
+            let md = user_dir(&username).join("mocks");
+            let _ = std::fs::create_dir_all(&md);
+            let _ = std::fs::write(md.join("active.json"), serde_json::to_string_pretty(&active).unwrap_or_default());
+            let _ = request.respond(json_response(200, &active));
+        }
+        ("POST", "/api/mock/submit") => {
+            let mut body = String::new();
+            let _ = request.as_reader().read_to_string(&mut body);
+            let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            let paper_id = payload["paper_id"].as_str().unwrap_or("").to_string();
+            let answers = payload["answers"].as_object().cloned().unwrap_or_default();
+            let date = payload["date"].as_str().unwrap_or("").to_string();
+            let mocks_dir = user_dir(&username).join("mocks");
+            let _ = std::fs::create_dir_all(&mocks_dir);
+            let active_path = mocks_dir.join("active.json");
+            let active: Value = std::fs::read_to_string(&active_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
+            let active_paper = active["paper_id"].as_str().unwrap_or("");
+            let mtype = active["type"].as_str().unwrap_or("guokao").to_string();
+            if !paper_id.is_empty() && !active_paper.is_empty() && active_paper != paper_id {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "试卷已变更或已提交"})));
+                return;
+            }
+            // 判分（objective 去空格逗号；essay 不算分）
+            let mut total = 0usize;
+            let mut obj_total = 0usize;
+            let mut obj_correct = 0usize;
+            let mut results = Vec::new();
+            for (qid, ans_val) in &answers {
+                let q = match bank.by_id.get(qid) { Some(q) => q, None => continue };
+                let ans = ans_val.as_str().unwrap_or("");
+                if q.qtype == "essay" {
+                    total += 1;
+                    results.push(json!({"id": qid, "type": "essay", "correct": Value::Null, "your": ans, "right": Value::Null, "explain": q.explain}));
+                } else {
+                    obj_total += 1; total += 1;
+                    let right = q.answer.to_uppercase();
+                    let your = ans.to_uppercase().replace([' ', ','], "");
+                    let ok = !your.is_empty() && your == right;
+                    if ok { obj_correct += 1; }
+                    results.push(json!({"id": qid, "type": q.qtype, "correct": ok, "your": your, "right": right, "explain": q.explain}));
+                }
+            }
+            let pct = if obj_total > 0 { (obj_correct as f64 * 100.0 / obj_total as f64 * 10.0).round() / 10.0 } else { 0.0 };
+            // 累计统计 + 每日（复用 /api/check 逻辑，使模考计入每日进度）
+            let stats_path = user_file(&username, "stats.json");
+            let daily_path = user_file(&username, "daily.json");
+            {
+                let mut m = load_stats(&stats_path);
+                for (qid, ans_val) in &answers {
+                    let q = match bank.by_id.get(qid) { Some(q) => q, None => continue };
+                    if q.qtype == "essay" { continue; }
+                    let ans = ans_val.as_str().unwrap_or("");
+                    let right = q.answer.to_uppercase();
+                    let your = ans.to_uppercase().replace([' ', ','], "");
+                    let ok = !your.is_empty() && your == right;
+                    let key = format!("{}|{}", q.subject, q.module);
+                    let e = m.entry(key).or_default(); e.t += 1; if ok { e.c += 1; }
+                }
+                save_stats(&stats_path, &m);
+            }
+            if !date.is_empty() {
+                let mut dl = load_daily(&daily_path);
+                let d = dl.entry(date.clone()).or_default();
+                for (qid, ans_val) in &answers {
+                    let q = match bank.by_id.get(qid) { Some(q) => q, None => continue };
+                    if q.qtype == "essay" { continue; }
+                    let ans = ans_val.as_str().unwrap_or("");
+                    let right = q.answer.to_uppercase();
+                    let your = ans.to_uppercase().replace([' ', ','], "");
+                    let ok = !your.is_empty() && your == right;
+                    let key = format!("{}|{}", q.subject, q.module);
+                    d.t += 1; let e = d.by.entry(key).or_default(); e.t += 1;
+                    if ok { d.c += 1; e.c += 1; }
+                }
+                save_daily(&daily_path, &dl);
+            }
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let rec = json!({
+                "paper_id": paper_id, "type": mtype, "date": date, "score": pct,
+                "objective_total": obj_total, "objective_correct": obj_correct,
+                "results": results, "graded": true, "count": total, "ts": now,
+            });
+            let fname = if paper_id.is_empty() { format!("paper-{}.json", now) } else { format!("{}.json", paper_id) };
+            let _ = std::fs::write(mocks_dir.join(fname), serde_json::to_string_pretty(&rec).unwrap_or_default());
+            let _ = std::fs::remove_file(&active_path);
+            let _ = request.respond(json_response(200, &json!({
+                "ok": true, "score": pct, "objective_total": obj_total, "objective_correct": obj_correct,
+                "results": results, "total": total, "paper_id": paper_id,
+            })));
+        }
+        ("GET", "/api/mock/history") => {
+            let mocks_dir = user_dir(&username).join("mocks");
+            let mut list: Vec<Value> = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(&mocks_dir) {
+                for e in rd.flatten() {
+                    let fname = e.file_name().to_string_lossy().to_string();
+                    if fname == "active.json" { continue; }
+                    if e.path().extension().map(|x| x == "json").unwrap_or(false) {
+                        if let Ok(s) = std::fs::read_to_string(e.path()) {
+                            if let Ok(v) = serde_json::from_str::<Value>(&s) { list.push(v); }
+                        }
+                    }
+                }
+            }
+            list.sort_by(|a, b| b["ts"].as_u64().unwrap_or(0).cmp(&a["ts"].as_u64().unwrap_or(0)));
+            let _ = request.respond(json_response(200, &json!({"history": list})));
+        }
+        // ---- 针对性刷题：薄弱模块（正确率<60%）抽题 ----
+        ("GET", "/api/targeted") => {
+            let qs = url.split('?').nth(1).unwrap_or("");
+            let count: usize = qs.split('&').find_map(|kv| kv.strip_prefix("count=").and_then(|v| v.parse().ok())).unwrap_or(20);
+            let n = if count > 0 { count } else { 20 };
+            let stats_path = user_file(&username, "stats.json");
+            let daily_path = user_file(&username, "daily.json");
+            let mut acc: HashMap<String, (usize, usize)> = HashMap::new();
+            let m = load_stats(&stats_path);
+            for (k, v) in &m {
+                if v.t > 0 { acc.insert(k.clone(), (v.t, v.c)); }
+            }
+            // 每日数据仅补充 stats 缺失的 module（避免重复累计）
+            if let Ok(s) = std::fs::read_to_string(&daily_path) {
+                if let Ok(dl) = serde_json::from_str::<DailyMap>(&s) {
+                    for (_d, day) in dl {
+                        for (k, v) in day.by {
+                            if v.t > 0 && !acc.contains_key(&k) { acc.insert(k, (v.t, v.c)); }
+                        }
+                    }
+                }
+            }
+            let weak_keys: Vec<String> = acc.iter()
+                .filter(|(_, (t, c))| *t > 0 && (*c as f64 * 100.0 / *t as f64) < 60.0)
+                .map(|(k, _)| k.clone()).collect();
+            let fallback = weak_keys.is_empty();
+            let mut pool: Vec<Q> = Vec::new();
+            if !fallback {
+                for k in &weak_keys {
+                    let (subj, modu) = k.split_once('|').unwrap_or((k.as_str(), ""));
+                    pool.extend(bank.questions.iter()
+                        .filter(|qq| qq.subject == subj && qq.module == modu && qq.qtype != "essay" && !qq.options.is_empty())
+                        .cloned());
+                }
+            } else {
+                pool = bank.questions.iter()
+                    .filter(|qq| qq.qtype != "essay" && !qq.options.is_empty())
+                    .cloned().collect();
+            }
+            if pool.is_empty() {
+                let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足"})));
+                return;
+            }
+            let picked = shuffle_take(&mut pool, n.min(pool.len()));
+            let qs_out: Vec<Value> = picked.iter().map(|qq| json!({
+                "id": qq.id, "stem": qq.stem, "options": qq.options, "module": qq.module,
+                "difficulty": qq.difficulty, "type": qq.qtype, "subject": qq.subject,
+            })).collect();
+            let note = if fallback {
+                "暂无薄弱模块（正确率<60%），已从全库随机抽题".to_string()
+            } else {
+                format!("已从 {} 个薄弱模块抽题（正确率<60%）", weak_keys.len())
+            };
+            let _ = request.respond(json_response(200, &json!({"ok": true, "questions": qs_out, "weak_count": weak_keys.len(), "fallback": fallback, "note": note})));
+        }
+        // ---- 考试截止时间 ----
+        ("GET", "/api/exam-deadline") => {
+            let ed = user_file(&username, "exam.json");
+            let v: Value = std::fs::read_to_string(&ed).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
+            let _ = request.respond(json_response(200, &json!({
+                "guokao": v["guokao"].as_str().unwrap_or("").to_string(),
+                "shengkao": v["shengkao"].as_str().unwrap_or("").to_string(),
+            })));
+        }
+        ("POST", "/api/exam-deadline") => {
+            let mut body = String::new();
+            let _ = request.as_reader().read_to_string(&mut body);
+            let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            let g = p["guokao"].as_str().unwrap_or("").to_string();
+            let s = p["shengkao"].as_str().unwrap_or("").to_string();
+            let v = json!({"guokao": g, "shengkao": s});
+            let _ = std::fs::write(user_file(&username, "exam.json"), serde_json::to_string_pretty(&v).unwrap_or_default());
+            let _ = request.respond(json_response(200, &json!({"ok": true, "guokao": g, "shengkao": s})));
         }
         _ => { let _ = request.respond(text_response(404, "text/plain; charset=utf-8", "not found".to_string())); }
     }
