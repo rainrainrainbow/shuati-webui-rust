@@ -171,3 +171,16 @@ textarea{width:100%;min-height:140px;border:1.5px solid var(--line);border-radiu
 .mocktimer{text-align:center;font-weight:700;color:#f76b15;padding:6px 0;font-size:15px;background:#fff7ed;border-radius:8px;margin-bottom:10px}
 .mocktimer b{font-variant-numeric:tabular-nums}
 .tarnote{background:#eef3ff;color:var(--blue);padding:7px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;line-height:1.5}
+/* ===== 状态切换（未刷/已刷/全部）===== */
+.statusbar{display:flex;gap:6px;align-items:center;justify-content:center;padding:4px 0 2px}
+.statusbar .slabel{font-size:12px;color:var(--mut);margin-right:2px}
+.statusbtn{border:1px solid var(--line);background:#fff;color:var(--mut);font-size:12px;padding:4px 14px;border-radius:14px;cursor:pointer}
+.statusbtn.active{background:var(--blue);border-color:var(--blue);color:#fff}
+/* ===== 题目素材（表格/图片/多行文本）===== */
+.material,.reference{margin:8px 0;font-size:14px;line-height:1.7}
+.matline{margin:2px 0;white-space:pre-wrap;word-break:break-word}
+.matimg,.refimg{max-width:100%;border-radius:8px;display:block;margin:6px auto;border:1px solid var(--line)}
+.mattable{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+.mattable th,.mattable td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+.mattable th{background:#f4f6fb;font-weight:600}
+.reftext{color:var(--mut);font-size:13px;background:#f8fafc;border-left:3px solid var(--line);padding:8px 10px;border-radius:0 8px 8px 0}
