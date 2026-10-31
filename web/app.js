@@ -4,13 +4,17 @@ let SUBJECTS=[], CUR='', QS=[], IDX=0, ANSWERS={}, RESULTS={}, GRADED=false;
 let MODE='normal';
 let CAT='全部', SEARCH='';
 let PCMODE=false;
+let RAW_QS=[], FILTER={module:'',difficulty:0};   // 筛选（模块/难度）
+let MOCK=null, MOCK_ACTIVE=false, MOCK_TIMER=null; // 模考状态
+let TARGETED=false, TARGETED_NOTE='';              // 针对性刷题状态
+let EXAMS={guokao:'',shengkao:''};                 // 考试截止日期
 const MOCK_IDS=['zt2019','zt2020','zt2021','zt2022','zt2023'];
 const LS_WRONG='shuati_wrong', LS_SRS='shuati_srs', LS_FAV='shuati_fav';
 const MODES=[['normal','常规'],['weak','薄弱优先'],['wrong','错题重练'],['srs','间隔复习'],['shuffle','交错'],['fav','⭐ 收藏']];
 const SRS_DAYS=[0,1,3,7,15,30]; // box1~5 间隔
 const $=s=>document.querySelector(s);
 const $$=s=>document.querySelectorAll(s);
-const isMock=()=>MOCK_IDS.includes(CUR);
+const isMock=()=>MOCK_ACTIVE || MOCK_IDS.includes(CUR);
 const isEssay=()=>QS.length>0 && QS[0].type==='essay';
 
 // ---- 多用户认证 ----
@@ -32,6 +36,7 @@ function onAuthed(name){
   $('#loginmask').classList.add('hide');
   $('#subname').textContent=' · '+name;
   loadSubjects();
+  loadExamDeadline();
 }
 function logout(){
   if(TOKEN){ fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})}).catch(()=>{}); }
@@ -252,10 +257,12 @@ function renderSubjects(){
   $$('.subjects button').forEach((b,i)=>{b.classList.toggle('active', arr[i]&&arr[i].id===CUR);});
 }
 async function loadQuiz(){
+  MOCK_ACTIVE=false; TARGETED=false; TARGETED_NOTE=''; stopMockTimer();
+  if(!SUBJECTS.some(s=>s.id===CUR)) CUR=SUBJECTS[0]?SUBJECTS[0].id:'';
   GRADED=false; ANSWERS={}; RESULTS={}; IDX=0;
   const d=await (await api('/api/questions?subject='+CUR)).json();
-  const qs=await applyMode(d.questions);
-  QS=qs;
+  RAW_QS=await applyMode(d.questions);
+  QS=applyFilter(RAW_QS);
   const sub=SUBJECTS.find(s=>s.id===CUR);
   let label=sub?sub.name+' · '+QS.length+'题':'';
   if(MODE==='wrong') label+=' · 错题重练';
@@ -288,6 +295,8 @@ function render(){
   let h=`<div class="qcard">
     <div class="qmod"><span>${esc(q.module)}${q.type==='multi'?'（多选）':''} ${diffBadge(q.difficulty)}</span><span class="no">第${no}/${QS.length}题 <button class="toolbtn ${isFav?'on':''}" onclick="toggleFav('${q.id}')">${isFav?'⭐':'☆'}收藏</button><button class="toolbtn" onclick="openReport('${q.id}')">⚠️纠错</button></span></div>
     <div class="progress"><i style="width:${pct}%"></i></div>
+    ${MOCK_ACTIVE&&MOCK?`<div class="mocktimer">⏱ 剩余 <b id="mcount">${fmtRemain(MOCK.deadline_ts)}</b></div>`:''}
+    ${TARGETED?`<div class="tarnote">🎯 ${esc(TARGETED_NOTE)}</div>`:''}
     <div class="stem">${esc(q.stem)}</div>`;
   if(q.material) h+=`<div class="material">${esc(q.material)}</div>`;
   if(isEssay()){
@@ -368,9 +377,10 @@ function renderFoot(no){
   const first=no<=1, last=no>=QS.length;
   const done=Object.keys(ANSWERS).length;
   let h=`<button ${first?'disabled':''} onclick="go(-1)">上一题</button>
-    <button onclick="showSheet()">答题卡<br><small style="font-size:10px">${done}/${QS.length}</small></button>
-    <button class="main" onclick="submitAll()">${isMock()?'交卷':'完成'}</button>
-    <button ${last?'disabled':''} onclick="go(1)">下一题</button>`;
+    <button onclick="showSheet()">答题卡<br><small style="font-size:10px">${done}/${QS.length}</small></button>`;
+  if(MOCK_ACTIVE){ h+=`<button class="main" onclick="submitMock()">交卷</button>`; }
+  else { h+=`<button class="main" onclick="submitAll()">${isMock()?'交卷':'完成'}</button>`; }
+  h+=`<button ${last?'disabled':''} onclick="go(1)">下一题</button>`;
   $('#foot').innerHTML=h;
 }
 function go(d){ IDX=Math.max(0,Math.min(QS.length-1,IDX+d)); render(); }
@@ -418,8 +428,12 @@ function showScorecard(d){
     <button class="btn" onclick="showSheet()">查看答题卡</button>
     <button class="btn ghost" onclick="render()">返回题目</button>
   </div>`;
-  $('#foot').innerHTML=`<button class="main" onclick="render()">继续看题</button><button onclick="loadQuiz()">重做本题库</button>`;
+  $('#foot').innerHTML=`<button class="main" onclick="render()">继续看题</button><button onclick="exitQuiz()">${(MOCK_ACTIVE||TARGETED||CUR==='mock'||CUR==='targeted')?'返回题库':'重做本题库'}</button>`;
   if($('#statpanel').classList.contains('open')) renderStats();
+}
+function exitQuiz(){
+  if(CUR==='mock'||CUR==='targeted'){ CUR=SUBJECTS[0]?SUBJECTS[0].id:''; }
+  loadQuiz();
 }
 function showSheet(){
   const g=$('#sheetgrid'); g.innerHTML='';
@@ -524,6 +538,165 @@ function renderMd(t){
   }
   if(inTable) out.push('</table>'); if(inList) out.push('</ul>');
   return out.join('');
+}
+
+// ---- 筛选弹窗（科目/模块/难度）----
+function applyFilter(qs){
+  let arr=qs;
+  if(FILTER.module) arr=arr.filter(q=>q.module===FILTER.module);
+  if(FILTER.difficulty) arr=arr.filter(q=>q.difficulty===FILTER.difficulty);
+  return arr;
+}
+function openFilter(){
+  const sub=SUBJECTS.find(s=>s.id===CUR)||{};
+  const subOpts=SUBJECTS.map(s=>`<option value="${s.id}" ${s.id===CUR?'selected':''}>${esc(s.name)}</option>`).join('');
+  const mods=(sub.modules||[]).filter(Boolean);
+  const modOpts=`<option value="">全部模块</option>`+mods.map(m=>`<option value="${esc(m)}" ${FILTER.module===m?'selected':''}>${esc(m)}</option>`).join('');
+  const diffOpts=`<option value="">全部难度</option>`+[1,2,3,4,5].map(v=>`<option value="${v}" ${FILTER.difficulty===v?'selected':''}>难度${'★'.repeat(v)}</option>`).join('');
+  $('#filterbody').innerHTML=`
+    <div class="sheethead">⚙️ 筛选 <button class="closebtn" onclick="closeFilter()">✕</button></div>
+    <label class="frow">科目<select id="fsub">${subOpts}</select></label>
+    <label class="frow">模块<select id="fmod">${modOpts}</select></label>
+    <label class="frow">难度<select id="fdiff">${diffOpts}</select></label>
+    <div class="frow fbtns"><button class="btn" onclick="applyFilterUI()">应用筛选</button><button class="btn ghost" onclick="resetFilterUI()">重置</button></div>`;
+  $('#filtermask').classList.add('open');
+}
+function closeFilter(){ $('#filtermask').classList.remove('open'); }
+function applyFilterUI(){
+  const s=$('#fsub').value;
+  FILTER.module=$('#fmod').value;
+  FILTER.difficulty=parseInt($('#fdiff').value||'0')||0;
+  closeFilter();
+  if(s!==CUR){ CUR=s; loadQuiz(); }
+  else { IDX=0; QS=applyFilter(RAW_QS); render(); }
+}
+function resetFilterUI(){
+  FILTER={module:'',difficulty:0};
+  closeFilter(); IDX=0; QS=applyFilter(RAW_QS); render();
+}
+
+// ---- 模拟考试（组卷/交卷/历史）----
+function fmtRemain(deadline){
+  const ms=(deadline*1000)-Date.now();
+  if(ms<=0) return '00:00';
+  const s=Math.floor(ms/1000);
+  return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+}
+function startMockTimer(){
+  stopMockTimer();
+  if(!MOCK) return;
+  MOCK_TIMER=setInterval(()=>{
+    const el=$('#mcount'); if(el) el.textContent=fmtRemain(MOCK.deadline_ts);
+    if(Date.now()>MOCK.deadline_ts*1000){ toast('⏰ 时间到，自动交卷'); submitMock(); }
+  },1000);
+}
+function stopMockTimer(){ if(MOCK_TIMER){ clearInterval(MOCK_TIMER); MOCK_TIMER=null; } }
+function openMockModal(){
+  $('#mockbody').innerHTML=`
+    <div class="sheethead">📝 模拟考试 <button class="closebtn" onclick="closeMock()">✕</button></div>
+    <p class="hint" style="text-align:left;padding:0">国考：行测 120 分钟（真题 zt2019-zt2023 + 五模块常识/言语/数量/判断/资料）。省考：100 分钟（广东真题）。</p>
+    <div class="mocksel"><button class="btn" onclick="startMock('guokao')">🎯 国考模考（120题 · 120分钟）</button></div>
+    <div class="mocksel"><button class="btn ghost" onclick="startMock('shengkao')">🌏 省考模考（100题 · 100分钟）</button></div>
+    <div class="mocksel"><button class="btn ghost" onclick="showMockHistory()">📜 模考历史</button></div>`;
+  $('#mockmask').classList.add('open');
+}
+function closeMock(){ $('#mockmask').classList.remove('open'); }
+async function startMock(type){
+  closeMock();
+  toast('正在组卷…');
+  let d;
+  try{ d=await (await api('/api/mock/generate?type='+type)).json(); }
+  catch(e){ toast('网络错误，请重试'); return; }
+  if(!d.ok){ toast(d.err||'组卷失败'); return; }
+  MOCK=d; MOCK_ACTIVE=true; TARGETED=false; TARGETED_NOTE=''; CUR='mock';
+  RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0; GRADED=false;
+  $('#subname').textContent=`📝 ${type==='guokao'?'国考':'省考'}模考 · ${d.count}题 · ${d.duration_min}分钟`;
+  startMockTimer();
+  render();
+}
+async function submitMock(){
+  if(!MOCK) return;
+  const payload={};
+  QS.forEach(q=>{ if(ANSWERS[q.id]!==undefined) payload[q.id]=ANSWERS[q.id]; });
+  const answered=Object.keys(payload).length;
+  if(!answered){ toast('还没有作答'); return; }
+  if(answered<QS.length && !confirm(`还有 ${QS.length-answered} 题未答，确定交卷？`)) return;
+  let d;
+  try{
+    d=await (await api('/api/mock/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paper_id:MOCK.paper_id,answers:payload,date:todayStr()})})).json();
+  }catch(e){ toast('网络错误，请重试'); return; }
+  if(!d.ok){ toast(d.err||'交卷失败'); return; }
+  stopMockTimer(); MOCK_ACTIVE=false; MOCK=null;
+  GRADED=true;
+  (d.results||[]).forEach(r=>{ RESULTS[r.id]=r; if(r.correct!==undefined) markGrade(r.id,r.correct,'mock'); });
+  showScorecard(d);
+}
+async function showMockHistory(){
+  let d={history:[]};
+  try{ d=await (await api('/api/mock/history')).json(); }catch(e){}
+  const list=d.history||[];
+  let h='<div class="sheethead">📜 模考历史 <button class="closebtn" onclick="closeMock()">✕</button></div>';
+  if(!list.length) h+='<p class="hint">还没有模考记录。先做一份模考吧。</p>';
+  else h+='<div class="mockhist">'+list.map(m=>`<div class="mockhistrow"><span class="mtype">${m.type==='guokao'?'国考':'省考'}</span><span>${esc(m.date||'')}</span><b>${m.score}分</b><small>${m.objective_correct||0}/${m.objective_total||0} 客观</small></div>`).join('')+'</div>';
+  $('#mockbody').innerHTML=h;
+  $('#mockmask').classList.add('open');
+}
+
+// ---- 针对性刷题（薄弱模块抽题）----
+async function startTargeted(){
+  toast('正在分析薄弱项…');
+  let d;
+  try{ d=await (await api('/api/targeted?count=20')).json(); }
+  catch(e){ toast('网络错误，请重试'); return; }
+  if(!d.ok||!d.questions||!d.questions.length){ toast(d.err||'暂无题目'); return; }
+  MOCK_ACTIVE=false; TARGETED=true; MOCK=null; stopMockTimer(); CUR='targeted';
+  RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0; GRADED=false;
+  TARGETED_NOTE=d.note||'';
+  $('#subname').textContent='🎯 针对性刷题 · '+QS.length+'题';
+  render();
+}
+
+// ---- 考试截止日期（倒计时）----
+function daysUntil(dateStr){
+  if(!dateStr) return null;
+  const d=new Date(dateStr+'T00:00:00'), now=new Date(); now.setHours(0,0,0,0);
+  return Math.round((d-now)/86400000);
+}
+function renderDeadline(){
+  const g=daysUntil(EXAMS.guokao), s=daysUntil(EXAMS.shengkao);
+  let t='';
+  if(g!==null) t+=`<span class="dl ${g<30?'urgent':''}">国考${g<0?'已过':g+'天'}</span>`;
+  if(s!==null) t+=`<span class="dl ${s<30?'urgent':''}">省考${s<0?'已过':s+'天'}</span>`;
+  const el=$('#examdl'); if(el) el.innerHTML=t;
+}
+async function loadExamDeadline(){
+  try{
+    const r=await api('/api/exam-deadline');
+    if(r.status===200){ EXAMS=(await r.json())||{}; renderDeadline(); }
+  }catch(e){}
+}
+function openDeadline(){
+  $('#dlbody').innerHTML=`
+    <div class="sheethead">⏰ 考试日期 <button class="closebtn" onclick="closeDeadline()">✕</button></div>
+    <p class="hint" style="text-align:left;padding:0">设置后顶部显示距国考/省考剩余天数。</p>
+    <label class="frow">国考笔试<input type="date" id="dlg" value="${esc(EXAMS.guokao||'')}"></label>
+    <label class="frow">省考笔试<input type="date" id="dls" value="${esc(EXAMS.shengkao||'')}"></label>
+    <div class="frow fbtns"><button class="btn" onclick="saveDeadline()">保存</button><button class="btn ghost" onclick="clearDeadline()">清除</button></div>`;
+  $('#dlmask').classList.add('open');
+}
+function closeDeadline(){ $('#dlmask').classList.remove('open'); }
+async function saveDeadline(){
+  const g=$('#dlg').value, s=$('#dls').value;
+  const r=await api('/api/exam-deadline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guokao:g,shengkao:s})});
+  const d=await r.json();
+  if(d.ok){ EXAMS={guokao:d.guokao||'',shengkao:d.shengkao||''}; renderDeadline(); toast('✅ 已保存'); }
+  closeDeadline();
+}
+async function clearDeadline(){
+  const r=await api('/api/exam-deadline',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guokao:'',shengkao:''})});
+  const d=await r.json();
+  if(d.ok){ EXAMS={guokao:'',shengkao:''}; renderDeadline(); toast('已清除'); }
+  closeDeadline();
 }
 
 initPC();
