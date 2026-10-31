@@ -4,7 +4,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -606,7 +605,8 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             }
             let duration_min = if qtype == "shengkao" { 100 } else { 120 };
             let n = if count > 0 { count } else { duration_min as usize };
-            let picked = shuffle_take(&mut pool, n.min(pool.len()));
+            let take_n = n.min(pool.len());
+            let picked = shuffle_take(&mut pool, take_n);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let deadline_ts = now + duration_min as u64 * 60;
             let paper_id = format!("{}-{}", qtype, now);
@@ -769,7 +769,8 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let _ = request.respond(json_response(200, &json!({"ok": false, "err": "题库不足"})));
                 return;
             }
-            let picked = shuffle_take(&mut pool, n.min(pool.len()));
+            let take_n2 = n.min(pool.len());
+            let picked = shuffle_take(&mut pool, take_n2);
             let qs_out: Vec<Value> = picked.iter().map(|qq| json!({
                 "id": qq.id, "stem": qq.stem, "options": qq.options, "module": qq.module,
                 "difficulty": qq.difficulty, "type": qq.qtype, "subject": qq.subject,
