@@ -209,6 +209,7 @@ function showDashboard(){
         <button class="dash-rec-card" onclick="quickMode('wrong')">📕 错题重练 <span>${wrongCount()} 道经典错题</span></button>
         <button class="dash-rec-card" onclick="quickShuffle()">🔀 随机一套 <span>40 题 · 限时冲刺</span></button>
         <button class="dash-rec-card" onclick="startMock()">📝 模拟考试 <span>按真考时长计时</span></button>
+        <button class="dash-rec-card" onclick="startTargeted()">🎯 针对性刷题 <span>薄弱模块 · 精准提升</span></button>
       </div>
       <div class="dash-section">我的科目 <span class="more" onclick="$('#subjects-block').classList.toggle('hide')">展开全部 →</span></div>
       <div id="subjects-block">
