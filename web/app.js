@@ -30,6 +30,8 @@ let CAT='全部', SEARCH='', PCMODE=false, VIEW='dash'; // dash | quiz
 let QSTATUS='undone'; // 未刷/已刷/全部，默认未刷
 let MOCK=null, MOCK_ACTIVE=false, MOCK_TIMER=null, MOCK_DEADLINE=0;
 let TARGETED=false, TARGET_NOTE='', FILTER={module:'',difficulty:0};
+// 每题作答时间（本次会话 qid -> 秒）；ANS_ACC/ANS_START/ANS_CUR 用于跟踪当前题的用时
+let ANSWER_TIMES={}, ANS_ACC={}, ANS_START=0, ANS_CUR='';
 let EXAMS={guokao:'',shengkao:''};
 const GRADED=true;
 // 申论 AI 评分状态：SL_SUBS 缓存该用户申论提交列表，按 qid 取最新
@@ -47,6 +49,42 @@ function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show'
 function fmtDate(ts){const d=new Date(ts);return `${d.getMonth()+1}月${d.getDate()}日`;}
 function todayStr(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function shuffleArr(a){const x=a.slice();for(let i=x.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[x[i],x[j]]=[x[j],x[i]];}return x;}
+
+// ---- 每题作答时间跟踪 ----
+const fmtT=s=>{ if(s===undefined||s===null||isNaN(s)) return ''; return (+s).toFixed(1)+'s'; };
+// 显示某题时调用：切题则把上一题累计时间存入 ANS_ACC，并重新起算当前题
+function noteShow(qid){
+  const now=Date.now();
+  if(ANS_CUR===qid){ ANS_START=now; return; } // 同题重渲染：仅刷新起点，不重复累计
+  if(ANS_CUR&&ANS_START){ ANS_ACC[ANS_CUR]=(ANS_ACC[ANS_CUR]||0)+(now-ANS_START); }
+  ANS_CUR=qid; ANS_START=now;
+}
+// 提交某题答案时调用：把该题已累计 + 当前段用时写入 ANSWER_TIMES[qid]（秒，1 位小数）
+function recTime(qid){
+  const now=Date.now();
+  let ms=ANS_ACC[qid]||0;
+  if(ANS_CUR===qid&&ANS_START){ ms+=now-ANS_START; }
+  if(ms>0){ ANSWER_TIMES[qid]=Math.round(ms/100)/10; }
+  delete ANS_ACC[qid];
+  if(ANS_CUR===qid){ ANS_CUR=''; ANS_START=0; }
+}
+// 当前显示题已用秒数（实时计时）
+function curElapsed(){
+  if(!ANS_CUR||!ANS_START) return 0;
+  const now=Date.now();
+  const ms=(ANS_ACC[ANS_CUR]||0)+(now-ANS_START);
+  return Math.max(0,Math.round(ms/100)/10);
+}
+// 本次会话每题用时汇总：总用时/平均每题/最慢题
+function timeSummary(){
+  const entries=Object.entries(ANSWER_TIMES).filter(([,t])=>t>0);
+  if(!entries.length) return null;
+  const total=Math.round(entries.reduce((a,[,t])=>a+t,0)*10)/10;
+  const avg=Math.round(total/entries.length*10)/10;
+  let slow=entries[0];
+  entries.forEach(e=>{ if(e[1]>slow[1]) slow=e; });
+  return {total, avg, slow:Math.round(slow[1]*10)/10, slowQ:slow[0], cnt:entries.length};
+}
 
 // ---- 认证 ---- 
 function api(path,opts){
@@ -284,7 +322,7 @@ function quickShuffle(){
 async function loadQuiz(post){
   MOCK_ACTIVE=false; MOCK=null; TARGETED=false; TARGET_NOTE=''; stopMockTimer();
   if(!SUBJECTS.some(s=>s.id===CUR)) CUR=SUBJECTS[0]?SUBJECTS[0].id:'';
-  ANSWERS={}; RESULTS={}; IDX=0;
+  ANSWERS={}; RESULTS={}; IDX=0; ANSWER_TIMES={}; ANS_ACC={}; ANS_CUR=''; ANS_START=0;
   let d;
   try{ d=await (await api('/api/questions?subject='+encodeURIComponent(CUR)+'&status='+QSTATUS)).json(); }
   catch(e){ toast('加载题目失败'); return; }
@@ -393,6 +431,7 @@ function render(){
   if(IDX<0) IDX=0; if(IDX>=QS.length) IDX=QS.length-1;
   const cur=QS[IDX]; if(!cur){ renderEmpty(); return; }
   const q=QS[IDX], no=IDX+1, isFav=!!favs()[q.id];
+  noteShow(q.id); // 记录本题开始作答时间
   const pct=Math.round(IDX/QS.length*100);
   const subj=SUBJECTS.find(s=>s.id===CUR);
   let h=renderStatusbar()+`<div class="qcard">
@@ -400,6 +439,7 @@ function render(){
       <span class="no">第 ${no} / ${QS.length} 题
         <button class="toolbtn ${isFav?'on':''}" onclick="toggleFav('${q.id}')">${isFav?'⭐':'☆ 收藏'}</button>
         <button class="toolbtn" onclick="openReport('${q.id}')">⚠️ 纠错</button>
+        <span class="qtimer" style="margin-left:8px;font-size:12px;color:var(--mut)">⏱ <b id="qtime">${fmtT(curElapsed())}</b></span>
       </span></div>
     <div class="progress"><i style="width:${pct}%"></i></div>
     ${MOCK_ACTIVE&&MOCK?`<div class="mocktimer">⏱ 剩余 <b id="mcount">${fmtRemain(MOCK.deadline_ts)}</b></div>`:''}
@@ -440,10 +480,12 @@ function optHTML(q,o,i){
 function feedbackHTML(q){
   const r=RESULTS[q.id];
   const open=isMock()?'show':'';
+  const qt=ANSWER_TIMES[q.id];
+  const timeStr=qt!==undefined?` <span style="opacity:.75;font-weight:400">⏱ ${fmtT(qt)}</span>`:'';
   const head=r.correct?'✓ 答对啦':'✗ 答错了，别急，记住这一个';
   const fans=`你的答案：<b>${esc(r.your||'（未答）')}</b>　正确答案：<b>${esc(r.right||'')}</b>`;
   return `<div class="feedback ${r.correct?'ok':'bad'}">
-    <div class="fhead">${head}</div>
+    <div class="fhead">${head}${timeStr}</div>
     <div class="fans">${fans}</div>
     ${r.explain?`<div class="explain-toggle" onclick="this.nextElementSibling.classList.toggle('show')">💡 ${open?'隐藏':'展开'}解析 ▾</div>
     <div class="explain-body ${open}">${esc(r.explain)}</div>`:''}
@@ -518,8 +560,9 @@ async function apiCheck(payload){
   return r.json();
 }
 async function submitOne(qid,val){
+  recTime(qid); // 记录本题作答用时
   try{
-    const d=await apiCheck({answers:{[qid]:val}});
+    const d=await apiCheck({answers:{[qid]:val}, answer_times:ANSWER_TIMES});
     if(d.results&&d.results[0]){ RESULTS[qid]=d.results[0]; if(d.results[0].correct!==undefined) markGrade(qid,d.results[0].correct); }
   }catch(e){ toast('网络错误，请重试'); }
   render();
@@ -614,9 +657,13 @@ function openSheet(){
   QS.forEach((q,i)=>{
     const r=RESULTS[q.id];
     const cls=r?(r.correct?'ok':'bad'):(ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!==''?'done':'');
-    g+=`<button class="${cls}" onclick="go(${i});closeSheet()">${i+1}</button>`;
+    const t=ANSWER_TIMES[q.id];
+    const tTip=t!==undefined?` title="第${i+1}题 用时 ${fmtT(t)}"`:'';
+    g+=`<button class="${cls}"${tTip} onclick="go(${i});closeSheet()">${i+1}</button>`;
   });
-  $('#sheetbody').innerHTML=`<div class="sheethead">答题卡 · ${Object.keys(RESULTS).length} 已答 <button class="closebtn" onclick="closeSheet()">✕</button></div><div class="sheetgrid">${g}</div>`;
+  const ts=timeSummary();
+  const tLine=ts?`<div style="margin-top:10px;font-size:12px;color:var(--mut);text-align:center">⏱ 总 ${fmtT(ts.total)} · 平均每题 ${fmtT(ts.avg)} · 最慢 ${fmtT(ts.slow)}（悬停看每题用时）</div>`:'';
+  $('#sheetbody').innerHTML=`<div class="sheethead">答题卡 · ${Object.keys(RESULTS).length} 已答 <button class="closebtn" onclick="closeSheet()">✕</button></div><div class="sheetgrid">${g}</div>${tLine}`;
   $('#sheetmask').classList.add('open');
 }
 function closeSheet(){ $('#sheetmask').classList.remove('open'); }
@@ -637,9 +684,10 @@ async function showStats(){
     const last7=dl.days.slice(0,7);
     dailyHtml+=last7.map(x=>{
       const pct=x.pct||0;
+      const tLine=(x.time_cnt&&x.time_avg)?`<span style="font-size:11px;color:var(--mut);margin-left:6px">⏱均 ${fmtT(x.time_avg)}${x.time_slowest_s?`·最慢 ${fmtT(x.time_slowest_s)}`:''}</span>`:'';
       return `<div class="dailyrow"><span class="dd">${x.date===(dl.today&&dl.today.date)?'今天':(x.date||'')}</span>
         <span class="bar"><i class="${pct<60?'weak':''}" style="width:${Math.min(pct,100)}%"></i></span>
-        <span class="pct">${pct}%</span><span class="d">${x.c}/${x.t}</span></div>`;
+        <span class="pct">${pct}%</span><span class="d">${x.c}/${x.t}</span>${tLine}</div>`;
     }).join('');
     if(dl.days.length>7) dailyHtml+=`<div class="empty-hint" style="font-size:12px;padding:4px 0">…共 ${dl.days.length} 天记录</div>`;
   }
@@ -881,7 +929,7 @@ async function launchMock(type,paper){
   catch(e){ toast('网络错误，请重试'); return; }
   if(!d.ok){ toast((d.notes&&d.notes[0])||d.err||'组卷失败'); return; }
   MOCK=d; MOCK_ACTIVE=true; TARGETED=false; TARGET_NOTE=''; CUR='mock';
-  RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0;
+  RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0; ANSWER_TIMES={}; ANS_ACC={}; ANS_CUR=''; ANS_START=0;
   MOCK_DEADLINE=d.deadline_ts;
   $('#subname').textContent=`📝 ${PAPER_NAME(type,paper)} · ${d.count}题 · ${d.duration_min}分钟`;
   if(d.notes&&d.notes.length) toast('⚠️ '+d.notes.join('；'));
@@ -890,13 +938,15 @@ async function launchMock(type,paper){
 async function submitMock(){
   if(!MOCK) return;
   const payload={};
-  QS.forEach(q=>{ if(ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!=='') payload[q.id]=Array.isArray(ANSWERS[q.id])?ANSWERS[q.id].join(''):ANSWERS[q.id]; }); // M1：多选数组 join 成串
+  const answeredQids=[];
+  QS.forEach(q=>{ if(ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!==''){ payload[q.id]=Array.isArray(ANSWERS[q.id])?ANSWERS[q.id].join(''):ANSWERS[q.id]; answeredQids.push(q.id); } }); // M1：多选数组 join 成串
   const answered=Object.keys(payload).length;
   if(!answered){ toast('还没有作答'); return; }
   if(answered<QS.length && !confirm(`还有 ${QS.length-answered} 题未答，确定交卷？`)) return;
+  answeredQids.forEach(qid=>recTime(qid)); // 交卷前记录每题作答用时
   let d;
   try{
-    d=await (await api('/api/mock/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paper_id:MOCK.paper_id,answers:payload,date:todayStr()})})).json();
+    d=await (await api('/api/mock/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paper_id:MOCK.paper_id,answers:payload,date:todayStr(),answer_times:ANSWER_TIMES})})).json();
   }catch(e){ toast('网络错误，请重试'); return; }
   if(!d.ok){ toast(d.err||'交卷失败'); return; }
   stopMockTimer(); MOCK_ACTIVE=false;
@@ -907,9 +957,12 @@ async function submitMock(){
 }
 function showScorecard(d){
   const obj=d.objective_total||0, oc=d.objective_correct||0;
+  const ts=timeSummary();
+  const tLine=ts?`<div class="sub" style="margin-top:6px;font-size:13px">⏱ 总用时 ${fmtT(ts.total)} · 平均每题 ${fmtT(ts.avg)} · 最慢 ${fmtT(ts.slow)}（${ts.cnt} 题计）</div>`:'';
   $('#quiz').innerHTML=`<div class="qcard scorecard">
     <div class="big">${d.score}分</div>
     <div class="sub">客观题 ${oc}/${obj} 正确 · 共 ${d.total} 题</div>
+    ${tLine}
     <button class="btn" onclick="openSheet()">查看答题卡</button>
     <button class="btn ghost" onclick="goDashboard()">返回首页</button>
   </div>`;
@@ -935,7 +988,7 @@ async function startTargeted(){
   catch(e){ toast('网络错误，请重试'); return; }
   if(!d.ok||!d.questions||!d.questions.length){ toast(d.err||'暂无题目'); return; }
   MOCK_ACTIVE=false; MOCK=null; TARGETED=true; stopMockTimer(); CUR='targeted';
-  RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0;
+  RAW_QS=d.questions; QS=d.questions; ANSWERS={}; RESULTS={}; IDX=0; ANSWER_TIMES={}; ANS_ACC={}; ANS_CUR=''; ANS_START=0;
   TARGET_NOTE=d.note||'';
   $('#subname').textContent='🎯 针对性刷题 · '+QS.length+'题';
   enterQuiz();
@@ -955,5 +1008,7 @@ function applyPC(){
 
 window.addEventListener('error',e=>console.log('[ERR] '+e.message+' @ '+(e.filename||'')+':'+(e.lineno||'')));
 /* ---------- 启动 ---------- */
+// 每题实时计时（1 秒刷新当前题已用秒数）
+setInterval(()=>{ if(VIEW!=='quiz') return; const el=document.getElementById('qtime'); if(el) el.textContent=fmtT(curElapsed()); },1000);
 initPC();
 bootAuth();
