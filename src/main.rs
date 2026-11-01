@@ -191,6 +191,32 @@ fn valid_whitelist(s: &str) -> bool {
 fn valid_year(s: &str) -> bool {
     s.len() == 4 && s.chars().all(|c| c.is_ascii_digit())
 }
+// URL 百分号解码（中文 module/juan 参数需解码，subject/status 为 ASCII 无需）
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex_val(b[i + 1]), hex_val(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        if b[i] == b'+' { out.push(b' '); } else { out.push(b[i]); }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
 
 // ---- 题库加载 ----
 fn read_quiz_json(explicit: &Option<PathBuf>) -> String {
@@ -819,9 +845,9 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let k = it.next().unwrap_or(""); let v = it.next().unwrap_or("");
                 if k == "subject" { subject = v.to_string(); }
                 if k == "status" { status = v.to_string(); }
-                if k == "module" { module = v.to_string(); }
-                if k == "year" { year = v.to_string(); }
-                if k == "juan" { juan = v.to_string(); }
+                if k == "module" { module = url_decode(v); }
+                if k == "year" { year = url_decode(v); }
+                if k == "juan" { juan = url_decode(v); }
             }
             // 真题筛选参数白名单校验（H3 白名单扩展）
             if (!module.is_empty() && !valid_whitelist(&module))
