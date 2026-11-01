@@ -211,6 +211,7 @@ function showDashboard(){
         <button class="dash-rec-card" onclick="quickMode('wrong')">📕 错题重练 <span>${wrongCount()} 道经典错题</span></button>
         <button class="dash-rec-card" onclick="quickShuffle()">🔀 随机一套 <span>40 题 · 限时冲刺</span></button>
         <button class="dash-rec-card" onclick="startMock()">📝 模拟考试 <span>按真考时长计时</span></button>
+        <button class="dash-rec-card" onclick="openZhenTi()">📚 真题筛选 <span>按模块 · 按年份 · 卷型</span></button>
         <button class="dash-rec-card" onclick="startTargeted()">🎯 针对性刷题 <span>薄弱模块 · 精准提升</span></button>
       </div>
       <div class="dash-section">我的科目 <span class="more" onclick="$('#subjects-block').classList.toggle('hide')">展开全部 →</span></div>
@@ -693,6 +694,72 @@ function applyFilterAndGo(){
   closeFilter(); MODE='normal'; loadQuiz();
 }
 function closeFilter(){ $('#filtermask').classList.remove('open'); }
+
+/* ---------- 真题筛选（按模块 / 年份 / 卷型，跨真题科目聚合） ---------- */
+function isZhentiSubj(s){
+  const id=(s&&s.id)||'';
+  return /^zt/.test(id)||/^gd/.test(id)||/^slzt/.test(id)||['changshi','yanyu','shuliang','panduan','ziliao','zhengzhi','jisuanji'].includes(id);
+}
+function subjYear(id){ const m=String(id||'').match(/\d{4}/); return m?m[0]:'综合'; }
+function zhentiModules(){
+  const set=new Set();
+  SUBJECTS.filter(isZhentiSubj).forEach(s=>(s.modules||[]).forEach(m=>{ if(m) set.add(m); }));
+  return [...set].sort();
+}
+function zhentiYears(){
+  const set=new Set();
+  SUBJECTS.filter(isZhentiSubj).forEach(s=>{ const y=subjYear(s.id); if(/^\d{4}$/.test(y)) set.add(y); });
+  return [...set].sort((a,b)=>b-a);
+}
+const ZT_JUANS=['副省级','地市级','行政执法'];
+let ZT={module:'',year:'',juan:''}, ZT_GROUPS=[];
+function openZhenTi(){
+  const mods=zhentiModules(), years=zhentiYears();
+  $('#ztbody').innerHTML=`
+    <div class="sheethead">📚 真题筛选 <button class="closebtn" onclick="closeZhenTi()">✕</button></div>
+    <div class="frow"><label>模块</label><select id="ztm"><option value="">全部模块</option>${mods.map(m=>`<option ${ZT.module===m?'selected':''}>${esc(m)}</option>`).join('')}</select></div>
+    <div class="frow"><label>年份</label><select id="zty"><option value="">全部年份</option>${years.map(y=>`<option ${ZT.year===y?'selected':''}>${y}</option>`).join('')}<option value="综合" ${ZT.year==='综合'?'selected':''}>综合（无年份真题）</option></select></div>
+    <div class="frow"><label>卷型（申论）</label><select id="ztj"><option value="">全部卷型</option>${ZT_JUANS.map(j=>`<option ${ZT.juan===j?'selected':''}>${esc(j)}</option>`).join('')}</select></div>
+    <button class="btn" onclick="showZhentiGroups()">查看真题题组 →</button>
+    <div id="ztresult"></div>`;
+  $('#ztmask').classList.add('open');
+}
+async function showZhentiGroups(){
+  const module=$('#ztm').value, year=$('#zty').value, juan=$('#ztj').value;
+  ZT={module,year,juan};
+  const box=$('#ztresult');
+  box.innerHTML='<div style="text-align:center;padding:16px;color:var(--mut);font-size:14px">加载中…</div>';
+  let d;
+  try{ d=await (await api('/api/questions?subject=zhenti&module='+encodeURIComponent(module)+'&year='+encodeURIComponent(year)+'&juan='+encodeURIComponent(juan))).json(); }
+  catch(e){ box.innerHTML='<div style="text-align:center;padding:16px;color:var(--bad)">加载失败，请重试</div>'; return; }
+  const qs=d.questions||[];
+  // 按 module+year 分组
+  const groups={};
+  qs.forEach(q=>{ const k=(q.module||'未分模块')+'@@'+(q.year||'综合'); (groups[k]=groups[k]||{module:q.module||'未分模块',year:q.year||'综合',subject:q.subject||'',qs:[]}).qs.push(q); });
+  ZT_GROUPS=Object.keys(groups).map(k=>groups[k]);
+  let html;
+  if(!ZT_GROUPS.length){ html='<div style="text-align:center;padding:22px;color:var(--mut)">😶 无匹配真题题组，调整筛选条件试试</div>'; }
+  else{
+    html=`<div style="font-size:12px;color:var(--mut);margin:12px 0 6px">共 ${qs.length} 题 · ${ZT_GROUPS.length} 个题组（按 模块+年份 分组）</div><div style="display:grid;gap:9px;max-height:46vh;overflow:auto">`;
+    ZT_GROUPS.forEach((g,i)=>{
+      const nm=(SUBJECTS.find(s=>s.id===g.subject)||{}).name||g.subject;
+      html+=`<div class="dash-subj-btn" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <div style="min-width:0"><span class="dash-subj-name">${esc(g.module)} · ${esc(g.year)}</span><span class="dash-subj-count">${esc(nm)} · ${g.qs.length} 题</span></div>
+        <button class="btn ghost" style="flex:0 0 auto;margin:0" onclick="practiceGroup(${i})">练这组 →</button>
+      </div>`;
+    });
+    html+='</div>';
+  }
+  box.innerHTML=html;
+}
+function practiceGroup(i){
+  const g=ZT_GROUPS[i]; if(!g||!g.qs.length){ toast('该题组暂无题'); return; }
+  closeZhenTi();
+  localStorage.setItem('shuati_last_subject',g.subject);
+  CUR=g.subject; FILTER.module=g.module; FILTER.difficulty=0; MODE='normal';
+  loadQuiz();
+}
+function closeZhenTi(){ $('#ztmask').classList.remove('open'); }
 
 /* ---------- 截止日（/api/exam-deadline） ---------- */
 function daysUntil(dateStr){
