@@ -444,8 +444,8 @@ fn grade_answers(bank: &Bank, answers: &serde_json::Map<String, Value>) -> Grade
     }
     (total, obj_total, obj_correct, results)
 }
-// 累计统计 + 每日 + 已刷（H4：DATA_LOCK 包住 load-modify-save）
-fn apply_grade_stats(username: &str, answers: &serde_json::Map<String, Value>, bank: &Bank, date: &str) {
+// 累计统计 + 每日 + 已刷 + 每题用时（H4：DATA_LOCK 包住 load-modify-save）
+fn apply_grade_stats(username: &str, answers: &serde_json::Map<String, Value>, bank: &Bank, date: &str, answer_times: &serde_json::Map<String, Value>) {
     let _g = DATA_LOCK.lock().unwrap();
     let stats_path = user_file(username, "stats.json");
     let daily_path = user_file(username, "daily.json");
@@ -474,6 +474,16 @@ fn apply_grade_stats(username: &str, answers: &serde_json::Map<String, Value>, b
             if ok { d.c += 1; e.c += 1; }
         }
         save_daily(&daily_path, &dl);
+        // 记录每题用时（answer_times.json，按日期覆盖 qid）
+        let at_path = user_file(username, "answer_times.json");
+        let mut atm = load_answer_times(&at_path);
+        let day = atm.entry(date.to_string()).or_default();
+        for (qid, v) in answer_times {
+            if valid_qid(qid) && valid_seconds(v) {
+                day.insert(qid.clone(), v.as_f64().unwrap_or(0.0));
+            }
+        }
+        save_answer_times(&at_path, &atm);
     }
     mark_done(username, answers, bank);
 }
@@ -510,6 +520,42 @@ fn save_daily(path: &std::path::Path, m: &DailyMap) {
     if let Ok(s) = serde_json::to_string(m) {
         let _ = std::fs::write(path, s);
     }
+}
+
+// ---- 每题作答时间（answer_times.json: date -> {qid: 秒}）----
+type AnswerTimesMap = HashMap<String, HashMap<String, f64>>; // date -> qid -> 秒
+fn load_answer_times(path: &std::path::Path) -> AnswerTimesMap {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<AnswerTimesMap>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_answer_times(path: &std::path::Path, m: &AnswerTimesMap) {
+    if let Ok(s) = serde_json::to_string(m) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
+// ---- 每题用时白名单校验（qid=^[A-Za-z0-9_\-]+$，秒数 0-3600）----
+fn valid_qid(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+fn valid_seconds(v: &Value) -> bool {
+    match v.as_f64() {
+        Some(x) => x.is_finite() && x >= 0.0 && x <= 3600.0,
+        None => false,
+    }
+}
+// 解析并校验 answer_times：缺失/空 → 空 map；任一非法 → None（整包拒绝 400）
+fn parse_answer_times(payload: &Value) -> Option<serde_json::Map<String, Value>> {
+    let v = &payload["answer_times"];
+    if v.is_null() { return Some(serde_json::Map::new()); }
+    let obj = v.as_object()?;
+    for (qid, s) in obj {
+        if !valid_qid(qid) || !valid_seconds(s) { return None; }
+    }
+    Some(obj.clone())
 }
 
 // ---- 已刷题目（每用户 done.json：已作答客观题 qid 数组）----
@@ -1010,12 +1056,27 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
         }
         ("GET", "/api/daily-stats") => {
             let dl = load_daily(&user_file(&username, "daily.json"));
-            let mut days: Vec<Value> = dl.iter().map(|(d, s)| json!({
-                "date": d, "t": s.t, "c": s.c,
-                "pct": if s.t > 0 { (s.c as f64 * 100.0 / s.t as f64 * 10.0).round() / 10.0 } else { 0.0 }
-            })).collect();
+            let atm = load_answer_times(&user_file(&username, "answer_times.json"));
+            let mut days: Vec<Value> = dl.iter().map(|(d, s)| {
+                let m = atm.get(d).cloned().unwrap_or_default();
+                let mut at_sum = 0.0f64; let mut at_cnt = 0usize;
+                let mut slow_q = String::new(); let mut slow_s = 0.0f64;
+                for (qid, sec) in &m {
+                    if *sec <= 0.0 { continue; }
+                    at_sum += sec; at_cnt += 1;
+                    if *sec > slow_s { slow_s = *sec; slow_q = qid.clone(); }
+                }
+                json!({
+                    "date": d, "t": s.t, "c": s.c,
+                    "pct": if s.t > 0 { (s.c as f64 * 100.0 / s.t as f64 * 10.0).round() / 10.0 } else { 0.0 },
+                    "time_cnt": at_cnt,
+                    "time_avg": if at_cnt > 0 { (at_sum / at_cnt as f64 * 10.0).round() / 10.0 } else { 0.0 },
+                    "time_slowest": slow_q,
+                    "time_slowest_s": if slow_s > 0.0 { (slow_s * 10.0).round() / 10.0 } else { 0.0 },
+                })
+            }).collect();
             days.sort_by(|a, b| b["date"].as_str().unwrap_or("").cmp(a["date"].as_str().unwrap_or("")));
-            let today = days.first().cloned().unwrap_or(json!({"date":"","t":0,"c":0,"pct":0.0}));
+            let today = days.first().cloned().unwrap_or(json!({"date":"","t":0,"c":0,"pct":0.0,"time_cnt":0,"time_avg":0.0,"time_slowest":"","time_slowest_s":0.0}));
             let _ = request.respond(json_response(200, &json!({"today": today, "days": days})));
         }
         ("POST", "/api/check") => {
@@ -1023,14 +1084,23 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let answers = payload["answers"].as_object().cloned().unwrap_or_default();
             let date = payload["date"].as_str().unwrap_or("").to_string();
+            // H6：answer_times 白名单校验（qid + 秒数），任一非法 → 400
+            let answer_times = match parse_answer_times(&payload) {
+                Some(m) => m,
+                None => {
+                    let _ = request.respond(json_response(400, &json!({"ok": false, "err": "answer_times 非法：qid 或秒数（0-3600）不合法"})));
+                    return;
+                }
+            };
             // L1 公共判分 + M6（essay 返回 reference，objective 一律剔除）
             let (total, obj_total, obj_correct, results) = grade_answers(bank, &answers);
             let pct = if obj_total > 0 { (obj_correct as f64 * 100.0 / obj_total as f64 * 10.0).round() / 10.0 } else { 0.0 };
             // H4：统计/每日/已刷 在锁内 load-modify-save
-            apply_grade_stats(&username, &answers, bank, &date);
+            apply_grade_stats(&username, &answers, bank, &date, &answer_times);
             let _ = request.respond(json_response(200, &json!({
                 "total": total, "objective_total": obj_total,
                 "objective_correct": obj_correct, "score": pct, "results": results,
+                "answer_times": answer_times,
             })));
         }
         ("POST", "/api/report") => {
@@ -1177,6 +1247,14 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let paper_id = payload["paper_id"].as_str().unwrap_or("").to_string();
             let answers = payload["answers"].as_object().cloned().unwrap_or_default();
             let date = payload["date"].as_str().unwrap_or("").to_string();
+            // H6：answer_times 白名单校验（qid + 秒数），任一非法 → 400
+            let answer_times = match parse_answer_times(&payload) {
+                Some(m) => m,
+                None => {
+                    let _ = request.respond(json_response(400, &json!({"ok": false, "err": "answer_times 非法：qid 或秒数（0-3600）不合法"})));
+                    return;
+                }
+            };
             // H3：paper_id 白名单（防路径遍历）
             if !paper_id.is_empty() && !valid_paper_id(&paper_id) {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "paper_id 非法"})));
@@ -1197,12 +1275,13 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let (total, obj_total, obj_correct, results) = grade_answers(bank, &answers);
             let pct = if obj_total > 0 { (obj_correct as f64 * 100.0 / obj_total as f64 * 10.0).round() / 10.0 } else { 0.0 };
             // H4：统计/每日/已刷 在锁内 load-modify-save
-            apply_grade_stats(&username, &answers, bank, &date);
+            apply_grade_stats(&username, &answers, bank, &date, &answer_times);
             let now = now_secs();
             let rec = json!({
                 "paper_id": paper_id, "type": mtype, "paper": mpaper, "date": date, "score": pct,
                 "objective_total": obj_total, "objective_correct": obj_correct,
                 "results": results, "graded": true, "count": total, "ts": now,
+                "answer_times": answer_times,
             });
             {
                 let _g = DATA_LOCK.lock().unwrap();
@@ -1213,6 +1292,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let _ = request.respond(json_response(200, &json!({
                 "ok": true, "score": pct, "objective_total": obj_total, "objective_correct": obj_correct,
                 "results": results, "total": total, "paper_id": paper_id,
+                "answer_times": answer_times,
             })));
         }
         ("GET", "/api/mock/history") => {
