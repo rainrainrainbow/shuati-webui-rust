@@ -186,6 +186,15 @@ fn save_users(m: &UsersMap) {
         let _ = std::fs::write(users_path(), s);
     }
 }
+// H2：确保至少有一个管理员——若既存用户均非 admin，把最早创建者提为管理员（幂等）
+fn ensure_admin() {
+    let mut users = load_users();
+    if users.is_empty() || users.values().any(|u| u.admin) { return; }
+    if let Some((_oldest, u)) = users.iter_mut().min_by_key(|(_, u)| u.created) {
+        u.admin = true;
+    }
+    save_users(&users);
+}
 fn user_dir(username: &str) -> PathBuf {
     let d = data_root().join("users").join(username);
     let _ = std::fs::create_dir_all(&d);
@@ -679,6 +688,7 @@ fn main() {
 
     let _ = std::fs::create_dir_all(data_root());
     let _ = std::fs::create_dir_all(data_root().join("users"));
+    ensure_admin(); // H2：确保至少一个管理员（幂等迁移）
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let bank = Arc::new(Bank::load(&quiz_path));
     let server = Server::http((bind.as_str(), port)).expect("绑定端口失败");
