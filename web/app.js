@@ -36,7 +36,7 @@ const GRADED=true;
 let SL_LOADED=false, SL_SUBS=[], SL_POLL_TIMER=null;
 
 /* ---------- 工具 ---------- */
-const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const loadJ=k=>{try{return JSON.parse(localStorage.getItem(k))||{};}catch(e){return {};}};
 const saveJ=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}};
 const wrongBank=()=>loadJ(LS_WRONG), srs=()=>loadJ(LS_SRS), favs=()=>loadJ(LS_FAV);
@@ -258,7 +258,7 @@ function resumeLast(){
   const last=localStorage.getItem('shuati_last_subject')||(SUBJECTS[0]?SUBJECTS[0].id:'');
   CUR=SUBJECTS.some(s=>s.id===last)?last:(SUBJECTS[0]?SUBJECTS[0].id:'');
   MODE='normal';
-  loadQuiz(()=>{ IDX=Math.min(parseInt(localStorage.getItem('shuati_last_index')||'0'),QS.length-1); render(); });
+  loadQuiz(()=>{ IDX=Math.min(parseInt(localStorage.getItem('shuati_last_index')||'0'),QS.length-1); }); // L5：enterQuiz 统一 render，避免双渲染
 }
 function quickMode(m){
   MODE=m;
@@ -276,7 +276,7 @@ function quickShuffle(){
   MODE='shuffle';
   const zx=SUBJECTS.find(s=>catOf(s)==='专项');
   CUR=zx?zx.id:(SUBJECTS[0]?SUBJECTS[0].id:'');
-  loadQuiz(function(){ QS=QS.slice(0,40); render(); });
+  loadQuiz(function(){ QS=QS.slice(0,40); }); // L5：enterQuiz 统一 render，避免双渲染
 }
 
 /* ---------- 加载题目（真实后端） ---------- */
@@ -360,7 +360,7 @@ function renderMaterial(t){
     if(!tr){ i++; continue; }
     let m=tr.match(/^!\[([^\]]*)\]\(([^)]+)\)/);
     if(m){ out+=`<img class="matimg" src="${esc(m[2])}" alt="${esc(m[1]||'')}" loading="lazy">`; i++; continue; }
-    if(/^<img[^>]+src=/i.test(tr)){ out+=tr; i++; continue; }
+    if(/^<img[^>]+src=/i.test(tr)){ out+=`<div class="matline">${esc(tr)}</div>`; i++; continue; } // M5：不再原样注入 <img>
     if(/^\|.*\|$/.test(tr) && i+1<lines.length && /^\|[\s:|-]+\|$/.test(lines[i+1].trim())){
       const rows=[tr]; i+=2;
       while(i<lines.length && /^\|.*\|$/.test(lines[i].trim())){ rows.push(lines[i].trim()); i++; }
@@ -382,8 +382,8 @@ function renderTable(rows){
 function renderReference(r){
   if(!r) return '';
   const s=String(r).trim();
-  if(/^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg)(\?\S*)?$/i.test(s) || /^<img/i.test(s)){
-    return /^<img/i.test(s)? s : `<img class="refimg" src="${esc(s)}" alt="参考图" loading="lazy">`;
+  if(/^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg)(\?\S*)?$/i.test(s)){
+    return `<img class="refimg" src="${esc(s)}" alt="参考图" loading="lazy">`;
   }
   return `<div class="matline reftext">${esc(s)}</div>`;
 }
@@ -762,21 +762,21 @@ function reportNav(dates,cur){
   return '<div class="rv-nav">'+dates.map(x=>`<button class="btn ${x===cur?'ghost':''}" onclick="showReportView('${x}')">${x}</button>`).join('')+'<button class="btn" onclick="closeReportView()">关闭</button></div>';
 }
 function renderMd(t){
-  let lines=t.split('\n'); let out=[], inTable=false, inList=false, hasRow=false;
+  let lines=String(t||'').split('\n'); let out=[], inTable=false, inList=false, hasRow=false;
   for(const raw of lines){
     const line=raw.replace(/\r$/,'');
     if(/^\|/.test(line)){
       if(!inTable){ out.push('<table>'); inTable=true; hasRow=false; }
-      const cells=line.trim().slice(1,-1).split('|').map(c=>c.trim());
+      const cells=line.trim().slice(1,-1).split('|').map(c=>esc(c.trim()));
       if(!cells.some(c=>/^-+$/.test(c))){ const tag=hasRow?'td':'th'; out.push('<tr>'+cells.map(c=>`<${tag}>${c}</${tag}>`).join('')+'</tr>'); hasRow=true; }
       continue;
     } else if(inTable){ out.push('</table>'); inTable=false; }
-    if(/^\s*[-*] /.test(line)){ if(!inList){ out.push('<ul>'); inList=true; } out.push('<li>'+line.replace(/^\s*[-*] /,'')+'</li>'); continue; }
+    if(/^\s*[-*] /.test(line)){ if(!inList){ out.push('<ul>'); inList=true; } out.push('<li>'+esc(line.replace(/^\s*[-*] /,''))+'</li>'); continue; }
     else if(inList){ out.push('</ul>'); inList=false; }
-    if(/^#{1,3}\s/.test(line)){ const lv=line.match(/^#+/)[0].length; out.push(`<h${lv}>`+line.replace(/^#+\s*/,'')+`</h${lv}>`); continue; }
+    if(/^#{1,3}\s/.test(line)){ const lv=line.match(/^#+/)[0].length; out.push(`<h${lv}>`+esc(line.replace(/^#+\s*/,''))+`</h${lv}>`); continue; }
     if(/^\s*$/.test(line)){ continue; }
-    if(/^\*\*.*\*\*$/.test(line.trim())){ out.push('<p><b>'+line.trim().slice(2,-2)+'</b></p>'); continue; }
-    out.push('<p>'+line+'</p>');
+    if(/^\*\*.*\*\*$/.test(line.trim())){ out.push('<p><b>'+esc(line.trim().slice(2,-2))+'</b></p>'); continue; }
+    out.push('<p>'+esc(line)+'</p>');
   }
   if(inTable) out.push('</table>'); if(inList) out.push('</ul>');
   return out.join('');
@@ -823,7 +823,7 @@ async function launchMock(type,paper){
 async function submitMock(){
   if(!MOCK) return;
   const payload={};
-  QS.forEach(q=>{ if(ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!=='') payload[q.id]=ANSWERS[q.id]; });
+  QS.forEach(q=>{ if(ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!=='') payload[q.id]=Array.isArray(ANSWERS[q.id])?ANSWERS[q.id].join(''):ANSWERS[q.id]; }); // M1：多选数组 join 成串
   const answered=Object.keys(payload).length;
   if(!answered){ toast('还没有作答'); return; }
   if(answered<QS.length && !confirm(`还有 ${QS.length-answered} 题未答，确定交卷？`)) return;
