@@ -139,11 +139,12 @@ impl Bank {
             .collect()
     }
 
-    // 真题聚合：跨全部真题科目，按 module/year/juan（卷型）过滤，附带 subject+year 供前端分组
-    fn zhenti_questions(&self, module: &str, year: &str, juan: &str) -> Vec<Value> {
+    // 真题聚合：跨全部真题科目，按 exam(国考/省考)/module/year/juan（卷型）过滤，附带 subject+year 供前端分组
+    fn zhenti_questions(&self, module: &str, year: &str, juan: &str, exam: &str) -> Vec<Value> {
         self.questions
             .iter()
             .filter(|q| is_zhenti_subject(&q.subject))
+            .filter(|q| exam.is_empty() || exam == "all" || exam_of_subject(&q.subject) == exam)
             .filter(|q| module.is_empty() || q.module == module)
             .filter(|q| juan.is_empty() || q.module == juan)
             .filter(|q| year.is_empty() || q_year(q) == year)
@@ -164,6 +165,14 @@ impl Bank {
 fn is_zhenti_subject(id: &str) -> bool {
     id.starts_with("zt") || id.starts_with("gd") || id.starts_with("slzt")
         || matches!(id, "changshi" | "yanyu" | "shuliang" | "panduan" | "ziliao" | "zhengzhi" | "jisuanji")
+}
+// 考试类型归属：国考=金管局真题 zt* + 国考申论 slzt* + 国考行测6模块 + 计算机岗；省考=gd*/gdsl*
+fn exam_of_subject(id: &str) -> &'static str {
+    if id.starts_with("gd") { return "shengkao"; } // gd* 与 gdsl* 均以 gd 开头
+    if id.starts_with("zt") || id.starts_with("slzt")
+        || matches!(id, "changshi" | "yanyu" | "shuliang" | "panduan" | "ziliao" | "zhengzhi" | "jisuanji")
+    { return "guokao"; }
+    "other"
 }
 // 从 subject id 提取年份（zt2019→2019、gd2016→2016、slzt2020fs→2020、gdsl2020→2020）
 fn subject_year(id: &str) -> Option<String> {
@@ -886,6 +895,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let mut module = String::new();
             let mut year = String::new();
             let mut juan = String::new();
+            let mut exam = String::new();
             for kv in request.url().split('?').nth(1).unwrap_or("").split('&') {
                 let mut it = kv.split('=');
                 let k = it.next().unwrap_or(""); let v = it.next().unwrap_or("");
@@ -894,17 +904,20 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 if k == "module" { module = url_decode(v); }
                 if k == "year" { year = url_decode(v); }
                 if k == "juan" { juan = url_decode(v); }
+                if k == "exam" { exam = url_decode(v); }
             }
             // 真题筛选参数白名单校验（H3 白名单扩展）
             if (!module.is_empty() && !valid_whitelist(&module))
                 || (!year.is_empty() && !valid_year(&year))
-                || (!juan.is_empty() && !valid_whitelist(&juan)) {
-                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "参数不合法（module/juan 限字母数字_-中文，year 为4位数字）"})));
+                || (!juan.is_empty() && !valid_whitelist(&juan))
+                || (!exam.is_empty() && !matches!(exam.as_str(), "all" | "guokao" | "shengkao")) {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "参数不合法（module/juan 限字母数字_-中文，year 为4位数字，exam 为 all/guokao/shengkao）"})));
                 return;
             }
+            if exam == "all" { exam = String::new(); } // all 视同不过滤
             let mut qs = if subject == "zhenti" {
-                // 真题聚合视图：跨全部真题科目按 module/year/juan 过滤
-                bank.zhenti_questions(&module, &year, &juan)
+                // 真题聚合视图：跨全部真题科目按 exam/module/year/juan 过滤
+                bank.zhenti_questions(&module, &year, &juan, &exam)
             } else {
                 let base = bank.public_questions(&subject);
                 // 单科目也支持 module/year 过滤
