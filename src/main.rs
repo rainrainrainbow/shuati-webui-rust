@@ -313,7 +313,7 @@ fn reset_login_fail(ip: &str, username: &str) {
     login_fails().lock().unwrap().remove(&format!("{}|{}", ip, username));
 }
 fn client_ip(request: &tiny_http::Request) -> String {
-    request.remote_addr().ip().to_string()
+    request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default()
 }
 
 // ---- 判分公共函数（L1/M1/M6）----
@@ -983,7 +983,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                         .cloned().collect();
                     if gd_pool.is_empty() {
                         let want = if count > 0 { count } else { 4 };
-                        let (mut p, mut n) = build_shenlun(bank, want);
+                        let (p, mut n) = build_shenlun(bank, want);
                         n.insert(0, "省考申论题库暂未入库，已回退为国考申论卷".to_string());
                         (p, n)
                     } else {
