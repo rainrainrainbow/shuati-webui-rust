@@ -743,57 +743,80 @@ function applyFilterAndGo(){
 }
 function closeFilter(){ $('#filtermask').classList.remove('open'); }
 
-/* ---------- 真题筛选（按模块 / 年份 / 卷型，跨真题科目聚合） ---------- */
+/* ---------- 真题筛选（按考试类型 / 模块 / 年份 / 卷型，跨真题科目聚合） ---------- */
 function isZhentiSubj(s){
   const id=(s&&s.id)||'';
   return /^zt/.test(id)||/^gd/.test(id)||/^slzt/.test(id)||['changshi','yanyu','shuliang','panduan','ziliao','zhengzhi','jisuanji'].includes(id);
 }
+function examOfSubj(id){ // 国考=zt*/slzt*/国考行测6模块/jisuanji；省考=gd*/gdsl*
+  if(/^gd/.test(id)) return 'shengkao';
+  if(/^zt/.test(id)||/^slzt/.test(id)||['changshi','yanyu','shuliang','panduan','ziliao','zhengzhi','jisuanji'].includes(id)) return 'guokao';
+  return 'other';
+}
 function subjYear(id){ const m=String(id||'').match(/\d{4}/); return m?m[0]:'综合'; }
+function ztSubjList(){ // 当前考试类型下的真题科目
+  return SUBJECTS.filter(s=>isZhentiSubj(s)&&(ZT.exam==='all'||examOfSubj(s.id)===ZT.exam));
+}
 function zhentiModules(){
   const set=new Set();
-  SUBJECTS.filter(isZhentiSubj).forEach(s=>(s.modules||[]).forEach(m=>{ if(m) set.add(m); }));
+  ztSubjList().forEach(s=>(s.modules||[]).forEach(m=>{ if(m) set.add(m); }));
   return [...set].sort();
 }
 function zhentiYears(){
   const set=new Set();
-  SUBJECTS.filter(isZhentiSubj).forEach(s=>{ const y=subjYear(s.id); if(/^\d{4}$/.test(y)) set.add(y); });
+  ztSubjList().forEach(s=>{ const y=subjYear(s.id); if(/^\d{4}$/.test(y)) set.add(y); });
   return [...set].sort((a,b)=>b-a);
 }
 const ZT_JUANS=['副省级','地市级','行政执法'];
-let ZT={module:'',year:'',juan:''}, ZT_GROUPS=[];
+const ZT_EXAMS=[['all','全部'],['guokao','国考'],['shengkao','省考']];
+let ZT={exam:'all',module:'',year:'',juan:''}, ZT_GROUPS=[];
 function openZhenTi(){
+  renderZtFilters();
+  $('#ztmask').classList.add('open');
+  showZhentiGroups();
+}
+function renderZtFilters(){
   const mods=zhentiModules(), years=zhentiYears();
   $('#ztbody').innerHTML=`
     <div class="sheethead">📚 真题筛选 <button class="closebtn" onclick="closeZhenTi()">✕</button></div>
-    <div class="frow"><label>模块</label><select id="ztm"><option value="">全部模块</option>${mods.map(m=>`<option ${ZT.module===m?'selected':''}>${esc(m)}</option>`).join('')}</select></div>
-    <div class="frow"><label>年份</label><select id="zty"><option value="">全部年份</option>${years.map(y=>`<option ${ZT.year===y?'selected':''}>${y}</option>`).join('')}<option value="综合" ${ZT.year==='综合'?'selected':''}>综合（无年份真题）</option></select></div>
-    <div class="frow"><label>卷型（申论）</label><select id="ztj"><option value="">全部卷型</option>${ZT_JUANS.map(j=>`<option ${ZT.juan===j?'selected':''}>${esc(j)}</option>`).join('')}</select></div>
-    <button class="btn" onclick="showZhentiGroups()">查看真题题组 →</button>
+    <div class="ztfilters">
+      <div class="frow"><label>考试类型</label><select id="zte" onchange="onZtChange()">${ZT_EXAMS.map(([v,l])=>`<option value="${v}" ${ZT.exam===v?'selected':''}>${l}</option>`).join('')}</select></div>
+      <div class="frow"><label>模块</label><select id="ztm" onchange="onZtChange()"><option value="">全部模块</option>${mods.map(m=>`<option ${ZT.module===m?'selected':''}>${esc(m)}</option>`).join('')}</select></div>
+      <div class="frow"><label>年份</label><select id="zty" onchange="onZtChange()"><option value="">全部年份</option>${years.map(y=>`<option ${ZT.year===y?'selected':''}>${y}</option>`).join('')}<option value="综合" ${ZT.year==='综合'?'selected':''}>综合（无年份真题）</option></select></div>
+      <div class="frow"><label>卷型（申论）</label><select id="ztj" onchange="onZtChange()"><option value="">全部卷型</option>${ZT_JUANS.map(j=>`<option ${ZT.juan===j?'selected':''}>${esc(j)}</option>`).join('')}</select></div>
+    </div>
     <div id="ztresult"></div>`;
-  $('#ztmask').classList.add('open');
+}
+function onZtChange(){ // 任一筛选变化即时刷新；考试类型变化时重置模块/年份/卷型（科目集已变）
+  const newExam=$('#zte').value, examChanged=newExam!==ZT.exam;
+  ZT={exam:newExam,
+      module:examChanged?'':$('#ztm').value,
+      year:examChanged?'':$('#zty').value,
+      juan:examChanged?'':$('#ztj').value};
+  if(examChanged) renderZtFilters();
+  showZhentiGroups();
 }
 async function showZhentiGroups(){
-  const module=$('#ztm').value, year=$('#zty').value, juan=$('#ztj').value;
-  ZT={module,year,juan};
   const box=$('#ztresult');
   box.innerHTML='<div style="text-align:center;padding:16px;color:var(--mut);font-size:14px">加载中…</div>';
   let d;
-  try{ d=await (await api('/api/questions?subject=zhenti&module='+encodeURIComponent(module)+'&year='+encodeURIComponent(year)+'&juan='+encodeURIComponent(juan))).json(); }
+  try{ d=await (await api('/api/questions?subject=zhenti&exam='+encodeURIComponent(ZT.exam)+'&module='+encodeURIComponent(ZT.module)+'&year='+encodeURIComponent(ZT.year)+'&juan='+encodeURIComponent(ZT.juan))).json(); }
   catch(e){ box.innerHTML='<div style="text-align:center;padding:16px;color:var(--bad)">加载失败，请重试</div>'; return; }
   const qs=d.questions||[];
-  // 按 module+year 分组
+  // 按 subject+module+year 分组（每组=一个科目的一个模块·年份，整组可练习）
   const groups={};
-  qs.forEach(q=>{ const k=(q.module||'未分模块')+'@@'+(q.year||'综合'); (groups[k]=groups[k]||{module:q.module||'未分模块',year:q.year||'综合',subject:q.subject||'',qs:[]}).qs.push(q); });
-  ZT_GROUPS=Object.keys(groups).map(k=>groups[k]);
+  qs.forEach(q=>{ const k=(q.subject||'')+'@@'+(q.module||'未分模块')+'@@'+(q.year||'综合'); (groups[k]=groups[k]||{subject:q.subject||'',module:q.module||'未分模块',year:q.year||'综合',qs:[]}).qs.push(q); });
+  ZT_GROUPS=Object.keys(groups).map(k=>groups[k]).sort((a,b)=>b.qs.length-a.qs.length);
   let html;
   if(!ZT_GROUPS.length){ html='<div style="text-align:center;padding:22px;color:var(--mut)">😶 无匹配真题题组，调整筛选条件试试</div>'; }
   else{
-    html=`<div style="font-size:12px;color:var(--mut);margin:12px 0 6px">共 ${qs.length} 题 · ${ZT_GROUPS.length} 个题组（按 模块+年份 分组）</div><div style="display:grid;gap:9px;max-height:46vh;overflow:auto">`;
+    html=`<div class="ztsum">共 ${qs.length} 题 · ${ZT_GROUPS.length} 个题组（按 模块·年份 分组）</div><div class="ztlist">`;
     ZT_GROUPS.forEach((g,i)=>{
       const nm=(SUBJECTS.find(s=>s.id===g.subject)||{}).name||g.subject;
-      html+=`<div class="dash-subj-btn" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <div style="min-width:0"><span class="dash-subj-name">${esc(g.module)} · ${esc(g.year)}</span><span class="dash-subj-count">${esc(nm)} · ${g.qs.length} 题</span></div>
-        <button class="btn ghost" style="flex:0 0 auto;margin:0" onclick="practiceGroup(${i})">练这组 →</button>
+      const ex=examOfSubj(g.subject)==='shengkao'?'省考':'国考';
+      html+=`<div class="ztcard" onclick="practiceGroup(${i})">
+        <div class="ztcard-top"><span class="ztcard-title">${esc(g.module)} · ${esc(g.year)}</span><span class="ztcard-badge">${g.qs.length} 题</span></div>
+        <div class="ztcard-sub">${esc(nm)} · ${ex}<span class="ztcard-go">练这组 →</span></div>
       </div>`;
     });
     html+='</div>';
