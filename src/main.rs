@@ -57,6 +57,8 @@ struct Q {
     reference: String,
     #[serde(default)]
     difficulty: u8,
+    #[serde(default)]
+    year: String,
 }
 
 struct Bank {
@@ -110,6 +112,7 @@ impl Bank {
                     material: q["material"].as_str().unwrap_or("").to_string(),
                     reference: q["reference"].as_str().unwrap_or("").to_string(),
                     difficulty: q["difficulty"].as_u64().unwrap_or(0) as u8,
+                    year: q["year"].as_str().unwrap_or("").to_string(),
                 });
             }
         }
@@ -135,6 +138,58 @@ impl Bank {
             })
             .collect()
     }
+
+    // 真题聚合：跨全部真题科目，按 module/year/juan（卷型）过滤，附带 subject+year 供前端分组
+    fn zhenti_questions(&self, module: &str, year: &str, juan: &str) -> Vec<Value> {
+        self.questions
+            .iter()
+            .filter(|q| is_zhenti_subject(&q.subject))
+            .filter(|q| module.is_empty() || q.module == module)
+            .filter(|q| juan.is_empty() || q.module == juan)
+            .filter(|q| year.is_empty() || q_year(q) == year)
+            .map(|q| {
+                json!({
+                    "id": q.id, "subject": q.subject, "module": q.module, "type": q.qtype,
+                    "stem": q.stem, "options": q.options, "material": q.material,
+                    "year": q_year(q), "reference": Value::Null, "difficulty": q.difficulty,
+                })
+            })
+            .collect()
+    }
+}
+
+// ---- 真题筛选辅助 ----
+// 真题科目：金管局真题 zt2019-2023、广东省考行测 gd2016-2026、国考申论真题 slzt2016-2026fs/ds/zx、
+// 广东省考申论 gdsl2016-2026、国考行测6模块(changshi/yanyu/shuliang/panduan/ziliao/zhengzhi)、计算机岗 jisuanji
+fn is_zhenti_subject(id: &str) -> bool {
+    id.starts_with("zt") || id.starts_with("gd") || id.starts_with("slzt")
+        || matches!(id, "changshi" | "yanyu" | "shuliang" | "panduan" | "ziliao" | "zhengzhi" | "jisuanji")
+}
+// 从 subject id 提取年份（zt2019→2019、gd2016→2016、slzt2020fs→2020、gdsl2020→2020）
+fn subject_year(id: &str) -> Option<String> {
+    let b = id.as_bytes();
+    if b.len() < 4 { return None; }
+    for i in 0..=b.len() - 4 {
+        if b[i..i + 4].iter().all(|c| c.is_ascii_digit()) {
+            return Some(id[i..i + 4].to_string());
+        }
+    }
+    None
+}
+// 题目年份：优先 subject id 内嵌年份，其次题目 year 字段，否则"综合"（国考行测6模块/计算机岗无年份）
+fn q_year(q: &Q) -> String {
+    if let Some(y) = subject_year(&q.subject) { return y; }
+    if !q.year.is_empty() { return q.year.clone(); }
+    "综合".to_string()
+}
+// 白名单校验：^[A-Za-z0-9_\-\u4e00-\u9fa5]+$（module/juan 参数）
+fn valid_whitelist(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || ('\u{4e00}'..='\u{9fa5}').contains(&c))
+}
+// 年份校验：^\d{4}$
+fn valid_year(s: &str) -> bool {
+    s.len() == 4 && s.chars().all(|c| c.is_ascii_digit())
 }
 
 // ---- 题库加载 ----
@@ -756,13 +811,41 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             };
             let mut subject = "xingce".to_string();
             let mut status = "all".to_string();
+            let mut module = String::new();
+            let mut year = String::new();
+            let mut juan = String::new();
             for kv in request.url().split('?').nth(1).unwrap_or("").split('&') {
                 let mut it = kv.split('=');
                 let k = it.next().unwrap_or(""); let v = it.next().unwrap_or("");
                 if k == "subject" { subject = v.to_string(); }
                 if k == "status" { status = v.to_string(); }
+                if k == "module" { module = v.to_string(); }
+                if k == "year" { year = v.to_string(); }
+                if k == "juan" { juan = v.to_string(); }
             }
-            let mut qs = bank.public_questions(&subject);
+            // 真题筛选参数白名单校验（H3 白名单扩展）
+            if (!module.is_empty() && !valid_whitelist(&module))
+                || (!year.is_empty() && !valid_year(&year))
+                || (!juan.is_empty() && !valid_whitelist(&juan)) {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "参数不合法（module/juan 限字母数字_-中文，year 为4位数字）"})));
+                return;
+            }
+            let mut qs = if subject == "zhenti" {
+                // 真题聚合视图：跨全部真题科目按 module/year/juan 过滤
+                bank.zhenti_questions(&module, &year, &juan)
+            } else {
+                let base = bank.public_questions(&subject);
+                // 单科目也支持 module/year 过滤
+                let sy = subject_year(&subject);
+                base.into_iter()
+                    .filter(|q| module.is_empty() || q["module"].as_str() == Some(module.as_str()))
+                    .filter(|q| {
+                        if year.is_empty() { return true; }
+                        let y = match &sy { Some(y) => y.clone(), None => "综合".to_string() };
+                        y == year
+                    })
+                    .collect()
+            };
             if status == "undone" || status == "done" {
                 let done = load_done(&user_file(&user, "done.json"));
                 let done_ids: std::collections::HashSet<String> = done.into_iter().collect();
