@@ -630,10 +630,16 @@ fn build_shengkao_xingce(bank: &Bank, want: usize) -> (Vec<Q>, Vec<String>) {
         let (p, mut n) = draw_by_module(&mut pool, &targets);
         picked.extend(p); notes.append(&mut n);
     }
+    if picked.len() < want {
+        let full: Vec<Q> = bank.questions.iter()
+            .filter(|q| q.subject.starts_with("gd") && !q.subject.starts_with("gdsl")
+                && q.qtype != "essay" && !q.options.is_empty())
+            .cloned().collect();
+        fill_to(want, &mut picked, &full);
+    }
     if picked.is_empty() { notes.push("题库不足，无法组卷".to_string()); }
     (picked, notes)
 }
-// 多科目等额抽题（国考专业卷：jisuanji + zt* 真题 + zx* 专项各摊 want/科目数）
 fn build_subject_paper(bank: &Bank, subj_ids: &[&str], want: usize) -> (Vec<Q>, Vec<String>) {
     let mut picked: Vec<Q> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
@@ -655,7 +661,21 @@ fn build_subject_paper(bank: &Bank, subj_ids: &[&str], want: usize) -> (Vec<Q>, 
         let (p, mut n) = draw_by_module(&mut pool, &targets);
         picked.extend(p); notes.append(&mut n);
     }
+    if picked.len() < want {
+        let full: Vec<Q> = bank.questions.iter()
+            .filter(|qq| subj_ids.contains(&qq.subject.as_str()) && qq.qtype != "essay" && !qq.options.is_empty())
+            .cloned().collect();
+        fill_to(want, &mut picked, &full);
+    }
+    if picked.is_empty() { notes.push("题库不足，无法组卷".to_string()); }
     (picked, notes)
+}
+// 补足到 want：从剩余池随机补（按 id 去重，L3 配比精确）
+fn fill_to(want: usize, picked: &mut Vec<Q>, pool: &[Q]) {
+    let have: std::collections::HashSet<String> = picked.iter().map(|q| q.id.clone()).collect();
+    let mut extra: Vec<Q> = pool.iter().filter(|q| !have.contains(&q.id)).cloned().collect();
+    let need = want.saturating_sub(picked.len());
+    if need > 0 { picked.extend(shuffle_take(&mut extra, need)); }
 }
 // 申论（essay 题）抽题：slzt* + slgongwen/sldanyi/slwenzhang/slzonghe
 fn build_shenlun(bank: &Bank, want: usize) -> (Vec<Q>, Vec<String>) {
