@@ -19,11 +19,16 @@ const STYLE_CSS: &str = include_str!("../web/style.css");
 const SESSION_TTL: u64 = 7 * 24 * 3600;
 // 请求体上限：2 MiB（防超大 body / 内存耗尽）
 const MAX_BODY: usize = 2 * 1024 * 1024;
-// 登录失败限流：连续失败超过阈值后指数退避
+// 登录/注册限流：连续失败超过阈值后指数退避（key 仅按 IP，不含 username，防绕过）
 const LOGIN_MAX_FAILS: u32 = 5;
+// 失败记录保留时长（秒）与表容量上限，定期清理防内存无限增长
+const FAIL_TTL: u64 = 3600;
+const FAIL_MAX_ENTRIES: usize = 2048;
+// bcrypt 代价：12 → 10，配合 IP 限流把注册/登录 CPU 成本压到可控
+const BCRYPT_COST: u32 = 10;
 // 全局数据文件写锁：包住所有用户数据文件的 load-modify-save（H4）
 static DATA_LOCK: Mutex<()> = Mutex::new(());
-// 登录失败记录：key "ip|username" -> (fail_count, last_fail_ts)
+// 失败记录：key "login|ip" / "reg|ip" -> (fail_count, last_fail_ts)
 static LOGIN_FAILS: OnceLock<Mutex<HashMap<String, (u32, u64)>>> = OnceLock::new();
 
 fn login_fails() -> &'static Mutex<HashMap<String, (u32, u64)>> {
@@ -134,6 +139,7 @@ impl Bank {
                     "stem": q.stem, "options": q.options, "material": q.material,
                     "reference": Value::Null,
                     "difficulty": q.difficulty,
+                    "year": q_year(q),
                 })
             })
             .collect()
@@ -146,7 +152,7 @@ impl Bank {
             .filter(|q| is_zhenti_subject(&q.subject))
             .filter(|q| exam.is_empty() || exam == "all" || exam_of_subject(&q.subject) == exam)
             .filter(|q| module.is_empty() || q.module == module)
-            .filter(|q| juan.is_empty() || q.module == juan)
+            .filter(|q| juan.is_empty() || juan_of_subject(&q.subject) == juan)
             .filter(|q| year.is_empty() || q_year(q) == year)
             .map(|q| {
                 json!({
@@ -196,9 +202,18 @@ fn valid_whitelist(s: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || ('\u{4e00}'..='\u{9fa5}').contains(&c))
 }
-// 年份校验：^\d{4}$
+// 年份校验：^\d{4}$ 或 "综合"（无年份真题）
 fn valid_year(s: &str) -> bool {
-    s.len() == 4 && s.chars().all(|c| c.is_ascii_digit())
+    s == "综合" || (s.len() == 4 && s.chars().all(|c| c.is_ascii_digit()))
+}
+// 申论卷型：subject 后缀 fs/ds/zx → 副省级/地市级/行政执法（与 q.module 解耦，避免组合过滤恒空）
+fn juan_of_subject(id: &str) -> &'static str {
+    if id.starts_with("slzt") || id.starts_with("gdsl") {
+        if id.ends_with("fs") { return "副省级"; }
+        if id.ends_with("ds") { return "地市级"; }
+        if id.ends_with("zx") { return "行政执法"; }
+    }
+    ""
 }
 // URL 百分号解码（中文 module/juan 参数需解码，subject/status 为 ASCII 无需）
 fn url_decode(s: &str) -> String {
@@ -358,11 +373,33 @@ fn valid_username(u: &str) -> bool {
     if n < 2 || n > 20 { return false; }
     u.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
+// 语义校验 YYYY-MM-DD：真实月份/天数（含闰年），拒绝非法日期
 fn valid_date(d: &str) -> bool {
-    let b: Vec<char> = d.chars().collect();
-    b.len() == 10
-        && b.iter().all(|c| c.is_ascii_digit() || *c == '-')
-        && b[4] == '-' && b[7] == '-'
+    if d.len() != 10 { return false; }
+    let b = d.as_bytes();
+    if b[4] != b'-' || b[7] != b'-' { return false; }
+    // 仅允许 ASCII 数字与固定位置连字符，避免多字节切片 panic
+    if !b.iter().enumerate().all(|(i, c)| c.is_ascii_digit() || ((i == 4 || i == 7) && *c == b'-')) { return false; }
+    let y: i32 = match d[0..4].parse() { Ok(v) => v, Err(_) => return false };
+    let m: u32 = match d[5..7].parse() { Ok(v) => v, Err(_) => return false };
+    let dd: u32 = match d[8..10].parse() { Ok(v) => v, Err(_) => return false };
+    if y < 1970 || y > 2100 || m < 1 || m > 12 || dd < 1 { return false; }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let dim = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    dd <= dim[(m - 1) as usize]
+}
+// 日期是否晚于服务器今天（YYYY-MM-DD 字典序即时间序）
+fn is_future_date(d: &str) -> bool { d > today_str().as_str() }
+// 申论提交 id：^sl-<数字>-<8位小写hex>$（与 /api/shenlun/submit 生成格式一致）
+fn valid_sub_id(s: &str) -> bool {
+    if s.len() < 14 || s.len() > 64 { return false; }
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 3 || parts[0] != "sl" { return false; }
+    if parts[1].is_empty() || parts[1].len() > 12
+        || !parts[1].bytes().all(|c| c.is_ascii_digit()) { return false; }
+    if parts[2].len() != 8
+        || !parts[2].bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) { return false; }
+    true
 }
 fn valid_paper_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128
@@ -379,21 +416,35 @@ fn safe_child(base: &Path, name: &str) -> Option<PathBuf> {
     if pc.starts_with(&bc) { Some(p) } else { None }
 }
 
-// ---- 请求体读取：限长（M4）----
-fn read_body_limit(request: &mut tiny_http::Request, max: usize) -> String {
+// ---- 请求体读取：限长（M4/M10：超限返回 Err，由调用方回 413，绝不静默截断）----
+fn read_body_limit(request: &mut tiny_http::Request, max: usize) -> Result<String, ()> {
     use std::io::Read as _;
     let mut buf = Vec::with_capacity(4096);
-    if let Ok(_n) = request.as_reader().take(max as u64).read_to_end(&mut buf) {
-        // 已限长
+    let n = request.as_reader().take(max as u64 + 1).read_to_end(&mut buf).map_err(|_| ())?;
+    if n > max { return Err(()); }
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+// 读 body；超限直接回 413 并返回 None
+fn body_or_413(request: &mut tiny_http::Request) -> Option<String> {
+    match read_body_limit(request, MAX_BODY) {
+        Ok(b) => Some(b),
+        Err(_) => {
+            let _ = request.respond(json_response(413, &json!({"ok": false, "err": "请求体过大（上限 2 MiB）"})));
+            None
+        }
     }
-    String::from_utf8_lossy(&buf).to_string()
 }
 
-// ---- 登录失败限流（M7）----
-fn login_penalty(ip: &str, username: &str) -> u64 {
-    let key = format!("{}|{}", ip, username);
+// ---- 登录/注册失败限流（M7：key 纯 IP，失败表限容量并定期清理）----
+fn prune_fails(m: &mut HashMap<String, (u32, u64)>) {
+    if m.len() > FAIL_MAX_ENTRIES {
+        let now = now_secs();
+        m.retain(|_, (_, last)| now.saturating_sub(*last) < FAIL_TTL);
+    }
+}
+fn rate_penalty(key: &str) -> u64 {
     let m = login_fails().lock().unwrap();
-    match m.get(&key) {
+    match m.get(key) {
         Some((f, last)) if *f >= LOGIN_MAX_FAILS => {
             let delay = 1u64 << (*f - LOGIN_MAX_FAILS).min(4); // 1,2,4,8,16 秒
             let elapsed = now_secs().saturating_sub(*last);
@@ -402,14 +453,14 @@ fn login_penalty(ip: &str, username: &str) -> u64 {
         _ => 0,
     }
 }
-fn note_login_fail(ip: &str, username: &str) {
-    let key = format!("{}|{}", ip, username);
+fn rate_note(key: &str) {
     let mut m = login_fails().lock().unwrap();
-    let e = m.entry(key).or_insert((0, now_secs()));
+    prune_fails(&mut m);
+    let e = m.entry(key.to_string()).or_insert((0, now_secs()));
     e.0 += 1; e.1 = now_secs();
 }
-fn reset_login_fail(ip: &str, username: &str) {
-    login_fails().lock().unwrap().remove(&format!("{}|{}", ip, username));
+fn rate_reset(key: &str) {
+    login_fails().lock().unwrap().remove(key);
 }
 fn client_ip(request: &tiny_http::Request) -> String {
     request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default()
@@ -462,22 +513,22 @@ fn apply_grade_stats(username: &str, answers: &serde_json::Map<String, Value>, b
         let mut m = load_stats(&stats_path);
         for (qid, ans_val) in answers {
             let q = match bank.by_id.get(qid) { Some(q) => q, None => continue };
-            if q.qtype == "essay" { continue; }
             let ans = ans_val.as_str().unwrap_or("");
-            let ok = ans_eq(&q.answer, &ans);
+            // 低：申论（essay）也计入做题量；客观题才计入正确数
+            let ok = q.qtype != "essay" && ans_eq(&q.answer, &ans);
             let key = format!("{}|{}", q.subject, q.module);
             let e = m.entry(key).or_default(); e.t += 1; if ok { e.c += 1; }
         }
         save_stats(&stats_path, &m);
     }
-    if !date.is_empty() && valid_date(date) {
+    // 未来日期不入每日统计（防刷数据）
+    if !date.is_empty() && valid_date(date) && !is_future_date(date) {
         let mut dl = load_daily(&daily_path);
         let d = dl.entry(date.to_string()).or_default();
         for (qid, ans_val) in answers {
             let q = match bank.by_id.get(qid) { Some(q) => q, None => continue };
-            if q.qtype == "essay" { continue; }
             let ans = ans_val.as_str().unwrap_or("");
-            let ok = ans_eq(&q.answer, &ans);
+            let ok = q.qtype != "essay" && ans_eq(&q.answer, &ans);
             let key = format!("{}|{}", q.subject, q.module);
             d.t += 1; let e = d.by.entry(key).or_default(); e.t += 1;
             if ok { d.c += 1; e.c += 1; }
@@ -556,15 +607,17 @@ fn valid_seconds(v: &Value) -> bool {
         None => false,
     }
 }
-// 解析并校验 answer_times：缺失/空 → 空 map；任一非法 → None（整包拒绝 400）
-fn parse_answer_times(payload: &Value) -> Option<serde_json::Map<String, Value>> {
-    let v = &payload["answer_times"];
-    if v.is_null() { return Some(serde_json::Map::new()); }
-    let obj = v.as_object()?;
-    for (qid, s) in obj {
-        if !valid_qid(qid) || !valid_seconds(s) { return None; }
+// 解析 answer_times：缺失/空 → 空 map；逐条丢弃非法项（qid 或秒数），不再整包 400
+fn parse_answer_times(payload: &Value) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    if let Some(obj) = payload["answer_times"].as_object() {
+        for (qid, s) in obj {
+            if valid_qid(qid) && valid_seconds(s) {
+                out.insert(qid.clone(), s.clone());
+            }
+        }
     }
-    Some(obj.clone())
+    out
 }
 
 // ---- 已刷题目（每用户 done.json：已作答客观题 qid 数组）----
@@ -616,18 +669,24 @@ fn read_shenlun_submissions(username: &str) -> Vec<Value> {
     list.sort_by(|a, b| b["submitted_at"].as_u64().unwrap_or(0).cmp(&a["submitted_at"].as_u64().unwrap_or(0)));
     list
 }
-// 跨用户查找提交（供评分 cron 用）：返回 (username, 文件路径, 记录)
+// 跨用户查找提交（供评分 cron / 单条查询用）：返回 (username, 文件路径, 记录)
+// H1：sub_id 白名单 + safe_child 复核，且记录内 id 必须与 sub_id 一致；属主取自实际所在目录
 fn find_shenlun_global(sub_id: &str) -> Option<(String, PathBuf, Value)> {
+    if !valid_sub_id(sub_id) { return None; }
     let users_dir = data_root().join("users");
     let rd = std::fs::read_dir(&users_dir).ok()?;
+    let fname = format!("{}.json", sub_id);
     for e in rd.flatten() {
         let u = e.file_name().to_string_lossy().to_string();
-        let sp = e.path().join("shenlun").join(format!("{}.json", sub_id));
-        if sp.exists() {
-            if let Ok(s) = std::fs::read_to_string(&sp) {
-                if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                    return Some((u, sp, v));
-                }
+        if !valid_username(&u) { continue; }
+        let sl_dir = e.path().join("shenlun");
+        let sp = match safe_child(&sl_dir, &fname) { Some(p) => p, None => continue };
+        if !sp.is_file() { continue; }
+        if let Ok(s) = std::fs::read_to_string(&sp) {
+            if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                // 防目录内文件名伪造：记录 id 必须与请求 id 完全一致
+                if v["id"].as_str() != Some(sub_id) { continue; }
+                return Some((u, sp, v));
             }
         }
     }
@@ -662,10 +721,17 @@ fn list_shenlun_pending() -> Vec<Value> {
     out
 }
 
+// 安全响应头（低）：CSP/禁止嗅探/禁止被 iframe 套用
+const CSP: &str = "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'self'; form-action 'self'";
+
 fn text_response(code: u16, content_type: &str, body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     Response::from_data(body.into_bytes())
         .with_status_code(code)
         .with_header(Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap())
+        .with_header(Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Content-Security-Policy"[..], CSP.as_bytes()).unwrap())
 }
 fn json_response(code: u16, v: &Value) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     text_response(code, "application/json; charset=utf-8", v.to_string())
@@ -712,17 +778,18 @@ fn draw_by_module(pool: &mut Vec<Q>, targets: &[(String, usize)]) -> (Vec<Q>, Ve
 }
 
 // ---- 模考组卷：按实际 subject+module 结构配比抽题（H1）----
-// 国考行测：按中文模块名配比（xingce 内部模块 + 专类科目池），20常识/40言语/15数量/40判断/20资料=135
+// 国考行测：按中文模块名配比（xingce 内部模块 + 专类科目池），政治理论20/常识20/言语40/数量15/判断40/资料20=155
 fn build_guokao_xingce(bank: &Bank, count: usize) -> (Vec<Q>, Vec<String>) {
     // (专类科目池 id, 中文模块名, 目标题数)
-    let base: [(&str, &str, f64); 5] = [
+    let base: [(&str, &str, f64); 6] = [
+        ("zhengzhi", "政治理论", 20.0),
         ("changshi", "常识判断", 20.0),
         ("yanyu", "言语理解与表达", 40.0),
         ("shuliang", "数量关系", 15.0),
         ("panduan", "判断推理", 40.0),
         ("ziliao", "资料分析", 20.0),
     ];
-    let scale = if count > 0 { count as f64 / 135.0 } else { 1.0 };
+    let scale = if count > 0 { count as f64 / 155.0 } else { 1.0 };
     let mut picked: Vec<Q> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     for (pool_id, module, bn) in base {
@@ -896,6 +963,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let mut year = String::new();
             let mut juan = String::new();
             let mut exam = String::new();
+            let mut summary: Option<bool> = None;
             for kv in request.url().split('?').nth(1).unwrap_or("").split('&') {
                 let mut it = kv.split('=');
                 let k = it.next().unwrap_or(""); let v = it.next().unwrap_or("");
@@ -905,6 +973,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 if k == "year" { year = url_decode(v); }
                 if k == "juan" { juan = url_decode(v); }
                 if k == "exam" { exam = url_decode(v); }
+                if k == "summary" { summary = Some(v != "0"); }
             }
             // 真题筛选参数白名单校验（H3 白名单扩展）
             if (!module.is_empty() && !valid_whitelist(&module))
@@ -920,17 +989,36 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 bank.zhenti_questions(&module, &year, &juan, &exam)
             } else {
                 let base = bank.public_questions(&subject);
-                // 单科目也支持 module/year 过滤
-                let sy = subject_year(&subject);
+                // 单科目也支持 module/year 过滤（统一用 q_year，含题目自带 year）
                 base.into_iter()
                     .filter(|q| module.is_empty() || q["module"].as_str() == Some(module.as_str()))
                     .filter(|q| {
                         if year.is_empty() { return true; }
-                        let y = match &sy { Some(y) => y.clone(), None => "综合".to_string() };
-                        y == year
+                        q["year"].as_str().unwrap_or("综合") == year
                     })
                     .collect()
             };
+            // 中7：真题默认只回题组摘要（subject/module/year/count），避免一次下发 4MB+；
+            // summary=1 强制摘要（前端用），summary=0 强制明细；无过滤且未指定 summary 时也走摘要。
+            let want_groups = subject == "zhenti"
+                && summary.unwrap_or(module.is_empty() && year.is_empty() && juan.is_empty());
+            if want_groups {
+                let mut gmap: HashMap<(String, String, String), usize> = HashMap::new();
+                for q in &qs {
+                    let key = (
+                        q["subject"].as_str().unwrap_or("").to_string(),
+                        q["module"].as_str().unwrap_or("").to_string(),
+                        q["year"].as_str().unwrap_or("综合").to_string(),
+                    );
+                    *gmap.entry(key).or_insert(0) += 1;
+                }
+                let mut groups: Vec<Value> = gmap.into_iter()
+                    .map(|((s, m, y), c)| json!({"subject": s, "module": m, "year": y, "count": c}))
+                    .collect();
+                groups.sort_by(|a, b| b["count"].as_u64().unwrap_or(0).cmp(&a["count"].as_u64().unwrap_or(0)));
+                let _ = request.respond(json_response(200, &json!({"groups": groups, "summary": true})));
+                return;
+            }
             if status == "undone" || status == "done" {
                 let done = load_done(&user_file(&user, "done.json"));
                 let done_ids: std::collections::HashSet<String> = done.into_iter().collect();
@@ -950,7 +1038,14 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             return;
         }
         ("POST", "/api/register") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let ip = client_ip(&request);
+            let rkey = format!("reg|{}", ip);
+            let pen = rate_penalty(&rkey);
+            if pen > 0 {
+                let _ = request.respond(json_response(429, &json!({"ok": false, "err": format!("注册过于频繁，请 {} 秒后再试", pen)})));
+                return;
+            }
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let username = p["username"].as_str().unwrap_or("").trim().to_string();
             let password = p["password"].as_str().unwrap_or("").to_string();
@@ -960,6 +1055,8 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "用户名需2-20位字母/数字/_-，密码≥4位"})));
                 return;
             }
+            // M5：每次尝试先计数（bcrypt 前），成功才清零；配合纯 IP key 抗 CPU DoS
+            rate_note(&rkey);
             let token = new_token();
             let is_first: bool;
             let display_name: String;
@@ -971,7 +1068,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                     let _ = request.respond(json_response(400, &json!({"ok": false, "err": "用户名已存在"})));
                     return;
                 }
-                let hash = bcrypt::hash(&password, bcrypt::DEFAULT_COST).unwrap_or_default();
+                let hash = bcrypt::hash(&password, BCRYPT_COST).unwrap_or_default();
                 let now = now_secs();
                 is_first = users.is_empty();
                 // H2：首个用户为管理员
@@ -985,19 +1082,21 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 display_name = users[&username].name.clone();
                 if is_first { migrate_legacy(&username); }
             }
+            rate_reset(&rkey);
             user_dir(&username);
             sessions.lock().unwrap().insert(token.clone(), (username.clone(), now_secs() + SESSION_TTL));
             let _ = request.respond(json_response(200, &json!({"ok": true, "token": token, "username": username, "name": display_name})));
             return;
         }
         ("POST", "/api/login") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let username = p["username"].as_str().unwrap_or("").trim().to_string();
             let password = p["password"].as_str().unwrap_or("").to_string();
             let ip = client_ip(&request);
-            // M7：连续失败限流（指数退避）
-            let pen = login_penalty(&ip, &username);
+            // M7：纯 IP 限流（不含 username，防换名绕过）
+            let lkey = format!("login|{}", ip);
+            let pen = rate_penalty(&lkey);
             if pen > 0 {
                 let _ = request.respond(json_response(429, &json!({"ok": false, "err": format!("尝试过于频繁，请 {} 秒后再试", pen)})));
                 return;
@@ -1015,18 +1114,18 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 }
             }
             if !ok {
-                note_login_fail(&ip, &username);
+                rate_note(&lkey);
                 let _ = request.respond(json_response(401, &json!({"ok": false, "err": "用户名或密码错误"})));
                 return;
             }
-            reset_login_fail(&ip, &username);
+            rate_reset(&lkey);
             let token = new_token();
             sessions.lock().unwrap().insert(token.clone(), (username.clone(), now_secs() + SESSION_TTL));
             let _ = request.respond(json_response(200, &json!({"ok": true, "token": token, "username": username, "name": name_display})));
             return;
         }
         ("POST", "/api/logout") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let tok = p["token"].as_str().unwrap_or("").to_string();
             sessions.lock().unwrap().remove(&tok);
@@ -1089,22 +1188,36 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 })
             }).collect();
             days.sort_by(|a, b| b["date"].as_str().unwrap_or("").cmp(a["date"].as_str().unwrap_or("")));
-            let today = days.first().cloned().unwrap_or(json!({"date":"","t":0,"c":0,"pct":0.0,"time_cnt":0,"time_avg":0.0,"time_slowest":"","time_slowest_s":0.0}));
+            // 低：today 用真实今天比较（此前取 days.first()，会把最近一天当"今天"）
+            let today_date = today_str();
+            let today: Value = {
+                let m = atm.get(&today_date).cloned().unwrap_or_default();
+                let mut at_sum = 0.0f64; let mut at_cnt = 0usize;
+                let mut slow_q = String::new(); let mut slow_s = 0.0f64;
+                for (qid, sec) in &m {
+                    if *sec <= 0.0 { continue; }
+                    at_sum += sec; at_cnt += 1;
+                    if *sec > slow_s { slow_s = *sec; slow_q = qid.clone(); }
+                }
+                let (t, c) = dl.get(&today_date).map(|x| (x.t, x.c)).unwrap_or((0, 0));
+                json!({
+                    "date": today_date, "t": t, "c": c,
+                    "pct": if t > 0 { (c as f64 * 100.0 / t as f64 * 10.0).round() / 10.0 } else { 0.0 },
+                    "time_cnt": at_cnt,
+                    "time_avg": if at_cnt > 0 { (at_sum / at_cnt as f64 * 10.0).round() / 10.0 } else { 0.0 },
+                    "time_slowest": slow_q,
+                    "time_slowest_s": if slow_s > 0.0 { (slow_s * 10.0).round() / 10.0 } else { 0.0 },
+                })
+            };
             let _ = request.respond(json_response(200, &json!({"today": today, "days": days})));
         }
         ("POST", "/api/check") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let answers = payload["answers"].as_object().cloned().unwrap_or_default();
             let date = payload["date"].as_str().unwrap_or("").to_string();
-            // H6：answer_times 白名单校验（qid + 秒数），任一非法 → 400
-            let answer_times = match parse_answer_times(&payload) {
-                Some(m) => m,
-                None => {
-                    let _ = request.respond(json_response(400, &json!({"ok": false, "err": "answer_times 非法：qid 或秒数（0-3600）不合法"})));
-                    return;
-                }
-            };
+            // H6/M2：answer_times 逐条白名单校验，非法项丢弃（不再整包 400）
+            let answer_times = parse_answer_times(&payload);
             // L1 公共判分 + M6（essay 返回 reference，objective 一律剔除）
             let (total, obj_total, obj_correct, results) = grade_answers(bank, &answers);
             let pct = if obj_total > 0 { (obj_correct as f64 * 100.0 / obj_total as f64 * 10.0).round() / 10.0 } else { 0.0 };
@@ -1117,7 +1230,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             })));
         }
         ("POST", "/api/report") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let qid = p["qid"].as_str().unwrap_or("").to_string();
             let q = bank.by_id.get(&qid);
@@ -1148,9 +1261,13 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("date=").map(|v| v.to_string())))
                 .unwrap_or_default();
             let date = if date.is_empty() { today_str() } else { date };
-            // H3/L6：date 白名单 ^\d{4}-\d{2}-\d{2}$
+            // H3/L6：date 白名单 ^\d{4}-\d{2}-\d{2}$ + 语义校验 + 拒绝未来日期
             if !valid_date(&date) {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "日期格式非法"})));
+                return;
+            }
+            if is_future_date(&date) {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "日期不能晚于今天"})));
                 return;
             }
             let base = user_dir(&username).join("reports");
@@ -1229,7 +1346,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let want = if count > 0 { count } else { 5 };
                 build_shenlun(bank, want)
             } else {
-                // 国考行测：常识20+言语40+数量15+判断40+资料20=135题
+                // 国考行测：政治理论20+常识20+言语40+数量15+判断40+资料20=155题
                 build_guokao_xingce(bank, count)
             };
             if picked.is_empty() {
@@ -1243,6 +1360,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let qs_out: Vec<Value> = picked.iter().map(|qq| json!({
                 "id": qq.id, "stem": qq.stem, "options": qq.options, "module": qq.module,
                 "difficulty": qq.difficulty, "type": qq.qtype, "material": qq.material,
+                "subject": qq.subject,
             })).collect();
             let active = json!({
                 "ok": true, "paper_id": paper_id, "type": qtype, "paper": paper, "count": picked.len(),
@@ -1251,23 +1369,21 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             });
             let md = user_dir(&username).join("mocks");
             let _ = std::fs::create_dir_all(&md);
-            let _ = std::fs::write(md.join("active.json"), serde_json::to_string_pretty(&active).unwrap_or_default());
+            // 低：active.json 写入纳入 DATA_LOCK，避免与交卷/其它用户并发写冲突
+            {
+                let _g = DATA_LOCK.lock().unwrap();
+                let _ = std::fs::write(md.join("active.json"), serde_json::to_string_pretty(&active).unwrap_or_default());
+            }
             let _ = request.respond(json_response(200, &active));
         }
         ("POST", "/api/mock/submit") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let paper_id = payload["paper_id"].as_str().unwrap_or("").to_string();
             let answers = payload["answers"].as_object().cloned().unwrap_or_default();
             let date = payload["date"].as_str().unwrap_or("").to_string();
-            // H6：answer_times 白名单校验（qid + 秒数），任一非法 → 400
-            let answer_times = match parse_answer_times(&payload) {
-                Some(m) => m,
-                None => {
-                    let _ = request.respond(json_response(400, &json!({"ok": false, "err": "answer_times 非法：qid 或秒数（0-3600）不合法"})));
-                    return;
-                }
-            };
+            // H6/M2：answer_times 逐条白名单校验，非法项丢弃（不再整包 400）
+            let answer_times = parse_answer_times(&payload);
             // H3：paper_id 白名单（防路径遍历）
             if !paper_id.is_empty() && !valid_paper_id(&paper_id) {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "paper_id 非法"})));
@@ -1284,10 +1400,16 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "试卷已变更或已提交"})));
                 return;
             }
+            // 中3：交卷前先判重，重复 paper_id 不计分、不落盘
+            let fname_early = if paper_id.is_empty() { format!("paper-{}.json", now_secs()) } else { format!("{}.json", paper_id) };
+            if mocks_dir.join(&fname_early).exists() {
+                let _ = request.respond(json_response(409, &json!({"ok": false, "err": "该试卷已交卷，不可重复提交"})));
+                return;
+            }
             // L1 公共判分 + M6（essay 返回 reference，objective 剔除）
             let (total, obj_total, obj_correct, results) = grade_answers(bank, &answers);
             let pct = if obj_total > 0 { (obj_correct as f64 * 100.0 / obj_total as f64 * 10.0).round() / 10.0 } else { 0.0 };
-            // H4：统计/每日/已刷 在锁内 load-modify-save
+            // H4：统计/每日/已刷 在锁内 load-modify-save（内部自行加 DATA_LOCK）
             apply_grade_stats(&username, &answers, bank, &date, &answer_times);
             let now = now_secs();
             let rec = json!({
@@ -1298,15 +1420,21 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             });
             {
                 let _g = DATA_LOCK.lock().unwrap();
+                // 中3：重复 paper_id 拒绝（保留 active 未清除时视为已交卷）
                 let fname = if paper_id.is_empty() { format!("paper-{}.json", now) } else { format!("{}.json", paper_id) };
-                let _ = std::fs::write(mocks_dir.join(fname), serde_json::to_string_pretty(&rec).unwrap_or_default());
+                let hist_path = mocks_dir.join(&fname);
+                if hist_path.exists() {
+                    let _ = request.respond(json_response(409, &json!({"ok": false, "err": "该试卷已交卷，不可重复提交"})));
+                    return;
+                }
+                let _ = std::fs::write(&hist_path, serde_json::to_string_pretty(&rec).unwrap_or_default());
                 let _ = std::fs::remove_file(&active_path);
+                let _ = request.respond(json_response(200, &json!({
+                    "ok": true, "score": pct, "objective_total": obj_total, "objective_correct": obj_correct,
+                    "results": results, "total": total, "paper_id": paper_id,
+                    "answer_times": answer_times,
+                })));
             }
-            let _ = request.respond(json_response(200, &json!({
-                "ok": true, "score": pct, "objective_total": obj_total, "objective_correct": obj_correct,
-                "results": results, "total": total, "paper_id": paper_id,
-                "answer_times": answer_times,
-            })));
         }
         ("GET", "/api/mock/history") => {
             let mocks_dir = user_dir(&username).join("mocks");
@@ -1391,10 +1519,15 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             })));
         }
         ("POST", "/api/exam-deadline") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
-            let g = p["guokao"].as_str().unwrap_or("").to_string();
-            let s = p["shengkao"].as_str().unwrap_or("").to_string();
+            let g = p["guokao"].as_str().unwrap_or("").trim().to_string();
+            let s = p["shengkao"].as_str().unwrap_or("").trim().to_string();
+            // 低：日期语义校验（允许未来；空串=清除）
+            if (!g.is_empty() && !valid_date(&g)) || (!s.is_empty() && !valid_date(&s)) {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "日期格式非法（YYYY-MM-DD）"})));
+                return;
+            }
             let v = json!({"guokao": g, "shengkao": s});
             let _g = DATA_LOCK.lock().unwrap();
             let _ = std::fs::write(user_file(&username, "exam.json"), serde_json::to_string_pretty(&v).unwrap_or_default());
@@ -1402,7 +1535,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
         }
         // ---- 申论 AI 评分 ----
         ("POST", "/api/shenlun/submit") => {
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let qid = p["qid"].as_str().unwrap_or("").to_string();
             let text = p["text"].as_str().unwrap_or("").to_string();
@@ -1472,11 +1605,16 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let _ = request.respond(json_response(403, &json!({"ok": false, "err": "仅管理员可评分"})));
                 return;
             }
-            let body = read_body_limit(&mut request, MAX_BODY);
+            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let sub_id = p["submission_id"].as_str().unwrap_or("").to_string();
             if sub_id.is_empty() {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "缺少 submission_id"})));
+                return;
+            }
+            // H1：id 格式先校验，杜绝路径遍历
+            if !valid_sub_id(&sub_id) {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "submission_id 非法"})));
                 return;
             }
             match find_shenlun_global(&sub_id) {
@@ -1501,6 +1639,10 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 .unwrap_or_default();
             if sub_id.is_empty() {
                 let _ = request.respond(json_response(400, &json!({"ok": false, "err": "缺少 submission_id"})));
+                return;
+            }
+            if !valid_sub_id(&sub_id) {
+                let _ = request.respond(json_response(400, &json!({"ok": false, "err": "submission_id 非法"})));
                 return;
             }
             match find_shenlun_global(&sub_id) {
