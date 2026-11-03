@@ -424,15 +424,19 @@ fn read_body_limit(request: &mut tiny_http::Request, max: usize) -> Result<Strin
     if n > max { return Err(()); }
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
-// 读 body；超限直接回 413 并返回 None
-fn body_or_413(request: &mut tiny_http::Request) -> Option<String> {
-    match read_body_limit(request, MAX_BODY) {
-        Ok(b) => Some(b),
-        Err(_) => {
-            let _ = request.respond(json_response(413, &json!({"ok": false, "err": "请求体过大（上限 2 MiB）"})));
-            None
+// 读 body；超限直接回 413 并 return。
+// 注意：tiny_http 的 respond() 消费 Request（self 按值），所以不能用 &mut 辅助函数，
+// 必须用宏在持有 request 的调用点展开。
+macro_rules! body_or_413 {
+    ($req:expr) => {
+        match read_body_limit(&mut $req, MAX_BODY) {
+            Ok(b) => b,
+            Err(_) => {
+                let _ = $req.respond(json_response(413, &json!({"ok": false, "err": "请求体过大（上限 2 MiB）"})));
+                return;
+            }
         }
-    }
+    };
 }
 
 // ---- 登录/注册失败限流（M7：key 纯 IP，失败表限容量并定期清理）----
@@ -1045,7 +1049,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let _ = request.respond(json_response(429, &json!({"ok": false, "err": format!("注册过于频繁，请 {} 秒后再试", pen)})));
                 return;
             }
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let username = p["username"].as_str().unwrap_or("").trim().to_string();
             let password = p["password"].as_str().unwrap_or("").to_string();
@@ -1089,7 +1093,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             return;
         }
         ("POST", "/api/login") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let username = p["username"].as_str().unwrap_or("").trim().to_string();
             let password = p["password"].as_str().unwrap_or("").to_string();
@@ -1125,7 +1129,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             return;
         }
         ("POST", "/api/logout") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let tok = p["token"].as_str().unwrap_or("").to_string();
             sessions.lock().unwrap().remove(&tok);
@@ -1212,7 +1216,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let _ = request.respond(json_response(200, &json!({"today": today, "days": days})));
         }
         ("POST", "/api/check") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let answers = payload["answers"].as_object().cloned().unwrap_or_default();
             let date = payload["date"].as_str().unwrap_or("").to_string();
@@ -1230,7 +1234,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             })));
         }
         ("POST", "/api/report") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let qid = p["qid"].as_str().unwrap_or("").to_string();
             let q = bank.by_id.get(&qid);
@@ -1377,7 +1381,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             let _ = request.respond(json_response(200, &active));
         }
         ("POST", "/api/mock/submit") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let paper_id = payload["paper_id"].as_str().unwrap_or("").to_string();
             let answers = payload["answers"].as_object().cloned().unwrap_or_default();
@@ -1519,7 +1523,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             })));
         }
         ("POST", "/api/exam-deadline") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let g = p["guokao"].as_str().unwrap_or("").trim().to_string();
             let s = p["shengkao"].as_str().unwrap_or("").trim().to_string();
@@ -1535,7 +1539,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
         }
         // ---- 申论 AI 评分 ----
         ("POST", "/api/shenlun/submit") => {
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let qid = p["qid"].as_str().unwrap_or("").to_string();
             let text = p["text"].as_str().unwrap_or("").to_string();
@@ -1605,7 +1609,7 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
                 let _ = request.respond(json_response(403, &json!({"ok": false, "err": "仅管理员可评分"})));
                 return;
             }
-            let body = match body_or_413(&mut request) { Some(b) => b, None => return };
+            let body = body_or_413!(request);
             let p: Value = serde_json::from_str(&body).unwrap_or(json!({}));
             let sub_id = p["submission_id"].as_str().unwrap_or("").to_string();
             if sub_id.is_empty() {
