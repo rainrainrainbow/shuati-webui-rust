@@ -39,8 +39,9 @@ let SL_LOADED=false, SL_SUBS=[], SL_POLL_TIMER=null;
 
 /* ---------- 工具 ---------- */
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const loadJ=k=>{try{return JSON.parse(localStorage.getItem(k))||{};}catch(e){return {};}};
-const saveJ=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}};
+const _jc={}; // loadJ 结果缓存，避免每次调用都读+解析 localStorage（renderSubjGrid 每科调一次是卡顿主因）
+const loadJ=k=>{ if(k in _jc) return _jc[k]; try{return _jc[k]=JSON.parse(localStorage.getItem(k))||{};}catch(e){return {};} };
+const saveJ=(k,v)=>{ _jc[k]=v; try{localStorage.setItem(k,JSON.stringify(v));}catch(e){} };
 const wrongBank=()=>loadJ(LS_WRONG), srs=()=>loadJ(LS_SRS), favs=()=>loadJ(LS_FAV);
 const isMock=()=>MOCK_ACTIVE;
 const isEssay=()=>QS.length&&QS[0].type==='essay';
@@ -209,6 +210,8 @@ function SUBJCOUNT(c){ return SUBJECTS.filter(s=>catOf(s)===c).length; }
 /* ---------- 仪表盘 ---------- */
 function dueCount(){ const s=srs(); return Object.values(s).filter(r=>r.box>0&&r.next<=Date.now()).length; }
 function overdueCount(){ const s=srs(); return Object.values(s).filter(r=>r.box>0&&r.next<Date.now()-86400000).length; }
+// 两处各调一次 srs()（每次读+解析 localStorage），合并为单次解析
+function dueOverCounts(){ const s=srs(); return [ Object.values(s).filter(r=>r.box>0&&r.next<=Date.now()).length, Object.values(s).filter(r=>r.box>0&&r.next<Date.now()-86400000).length ]; }
 function wrongCount(){ return Object.keys(wrongBank()).length; }
 function updateBell(){
   const n=dueCount(); const b=$('#bell-count'); if(!b) return;
@@ -224,7 +227,7 @@ function showDashboard(){
   const lastSub=localStorage.getItem('shuati_last_subject')||(SUBJECTS[0]?SUBJECTS[0].id:'');
   const lastIdx=parseInt(localStorage.getItem('shuati_last_index')||'0');
   const subj=SUBJECTS.find(s=>s.id===lastSub)||SUBJECTS[0];
-  const wb=wrongBank(); const due=dueCount(); const over=overdueCount();
+  const wb=wrongBank(); const [due,over]=dueOverCounts();
   $('#subname').textContent=USERNAME?(' · '+USERNAME+'　🏠 首页'):' · 首页';
   statSummary().then(g=>{
     $('#dashboard').innerHTML=`
@@ -280,9 +283,10 @@ function renderSubjGrid(){
   const arr=(CAT==='全部'?SUBJECTS:SUBJECTS.filter(s=>catOf(s)===CAT));
   if(!arr.length){ box.innerHTML='<p class="empty-hint">该分类暂无科目</p>'; return; }
   const last=localStorage.getItem('shuati_last_subject');
+  const wb=wrongBank(); // 循环外提：不再每个科目都读+解析 localStorage（75+ 科目 → 1 次解析）
   arr.forEach(s=>{
     const b=document.createElement('button');
-    const mine=Object.values(wrongBank()).filter(w=>w.subject===s.id).length;
+    const mine=Object.values(wb).filter(w=>w.subject===s.id).length;
     b.className='dash-subj-btn'+(s.id===last?' cur':'');
     b.innerHTML=`<span class="dash-subj-name">${esc(s.name)}</span><span class="dash-subj-count">${s.count} 题${mine?` · ${mine} 错题`:''}</span>`;
     b.onclick=()=>{ localStorage.setItem('shuati_last_subject',s.id); CUR=s.id; MODE='normal'; loadQuiz(); };
@@ -348,7 +352,7 @@ async function applyMode(qs){
   }
   if(MODE==='wrong'){ const wb=wrongBank(); const a=qs.filter(q=>wb[q.id]); if(!a.length) toast('🎯 暂无错题 —— 继续保持！'); return a; }
   if(MODE==='fav'){ const f=favs(); const a=qs.filter(q=>f[q.id]); if(!a.length) toast('还没有收藏，答题时点 ☆'); return a; }
-  if(MODE==='srs'&&obj){ const a=qs.filter(q=>isDue(q.id)); if(!a.length) toast('🎉 无到期题，先做常规积累'); return a; }
+  if(MODE==='srs'&&obj){ const _ss=srs(); const a=qs.filter(q=>{const r=_ss[q.id];return !r||r.box===0||r.next<=Date.now();}); if(!a.length) toast('🎉 无到期题，先做常规积累'); return a; }
   return qs;
 }
 function enterQuiz(){
@@ -691,7 +695,8 @@ async function showStats(){
     }).join('');
     if(dl.days.length>7) dailyHtml+=`<div class="empty-hint" style="font-size:12px;padding:4px 0">…共 ${dl.days.length} 天记录</div>`;
   }
-  const wbN=Object.keys(wrongBank()).length, dueN=Object.keys(srs()).filter(isDue).length;
+  const _s=srs();
+  const wbN=Object.keys(wrongBank()).length, dueN=Object.keys(_s).filter(q=>{const r=_s[q];return !r||r.box===0||r.next<=Date.now();}).length;
   const mods=d.modules||[];
   if(!mods.length){
     body.innerHTML=`<div class="sheethead">📊 我的数据 <button class="closebtn" onclick="closeStats()">✕</button></div>
