@@ -3,7 +3,8 @@
 const $=s=>document.querySelector(s);
 const $$=s=>document.querySelectorAll(s);
 const LS_TOKEN='shuati_token', LS_USER='shuati_user';
-const LS_WRONG='shuati_wrong', LS_SRS='shuati_srs', LS_FAV='shuati_fav';
+// 错题本/SRS/收藏键按用户名隔离（在 scopeKeys 中加 :username 后缀），避免换号串数据
+let LS_WRONG='shuati_wrong', LS_SRS='shuati_srs', LS_FAV='shuati_fav';
 const MODES=[['normal','常规'],['weak','先攻弱项'],['wrong','错题重练'],['srs','到期复习'],['shuffle','打乱顺序'],['fav','⭐ 收藏']];
 const SRS_DAYS=[0,1,3,7,15,30];
 const TOAST_MS=1800;
@@ -11,7 +12,7 @@ const STATUSES=[['undone','未刷'],['done','已刷'],['all','全部']];
 // 模考卷类型
 const PAPERS=[
   {type:'guokao', paper:'zhuanye', label:'国考·专业卷',  count:100, min:120, emoji:'💼'},
-  {type:'guokao', paper:'xingce',  label:'国考·行测卷',  count:135, min:120, emoji:'🎯'},
+  {type:'guokao', paper:'xingce',  label:'国考·行测卷',  count:155, min:120, emoji:'🎯'},
   {type:'guokao', paper:'shenlun', label:'国考·申论卷',  count:5,   min:180, emoji:'✍️'},
   {type:'shengkao',paper:'xingce', label:'省考·行测卷',  count:100, min:100, emoji:'🌏'},
   {type:'shengkao',paper:'shenlun',label:'省考·申论卷',  count:4,   min:150, emoji:'📝'},
@@ -29,7 +30,7 @@ let SUBJECTS=[], CUR='', QS=[], RAW_QS=[], IDX=0, ANSWERS={}, RESULTS={}, MODE='
 let CAT='全部', SEARCH='', PCMODE=false, VIEW='dash'; // dash | quiz
 let QSTATUS='undone'; // 未刷/已刷/全部，默认未刷
 let MOCK=null, MOCK_ACTIVE=false, MOCK_TIMER=null, MOCK_DEADLINE=0;
-let TARGETED=false, TARGET_NOTE='', FILTER={module:'',difficulty:0};
+let TARGETED=false, TARGET_NOTE='', FILTER={module:'',difficulty:0,year:''};
 // 每题作答时间（本次会话 qid -> 秒）；ANS_ACC/ANS_START/ANS_CUR 用于跟踪当前题的用时
 let ANSWER_TIMES={}, ANS_ACC={}, ANS_START=0, ANS_CUR='';
 let EXAMS={guokao:'',shengkao:''};
@@ -39,15 +40,38 @@ let SL_LOADED=false, SL_SUBS=[], SL_POLL_TIMER=null;
 
 /* ---------- 工具 ---------- */
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const _jc={}; // loadJ 结果缓存，避免每次调用都读+解析 localStorage（renderSubjGrid 每科调一次是卡顿主因）
+let _jc={}; // loadJ 结果缓存，避免每次调用都读+解析 localStorage（切换用户时必须清空）
 const loadJ=k=>{ if(k in _jc) return _jc[k]; try{return _jc[k]=JSON.parse(localStorage.getItem(k))||{};}catch(e){return {};} };
 const saveJ=(k,v)=>{ _jc[k]=v; try{localStorage.setItem(k,JSON.stringify(v));}catch(e){} };
+// 中4：把本地键按用户名隔离，并重置所有跨号缓存
+function scopeKeys(){
+  const u=USERNAME||'anon';
+  LS_WRONG='shuati_wrong:'+u; LS_SRS='shuati_srs:'+u; LS_FAV='shuati_fav:'+u;
+  _jc={}; SL_SUBS=[]; SL_LOADED=false;
+  // 一次性把旧的无前缀数据迁移给首个登录用户，避免升级后错题本丢失
+  try{
+    if(!localStorage.getItem('shuati_scope_migrated')){
+      [['shuati_wrong',LS_WRONG],['shuati_srs',LS_SRS],['shuati_fav',LS_FAV]].forEach(([o,n])=>{
+        if(!localStorage.getItem(n)&&localStorage.getItem(o)) localStorage.setItem(n,localStorage.getItem(o));
+      });
+      localStorage.setItem('shuati_scope_migrated','1');
+    }
+  }catch(e){}
+}
+// 登录/登出时清空上一个账号的运行时状态
+function resetSessionState(){
+  SUBJECTS=[]; CUR=''; QS=[]; RAW_QS=[]; IDX=0; ANSWERS={}; RESULTS={};
+  ANSWER_TIMES={}; ANS_ACC={}; ANS_CUR=''; ANS_START=0;
+  MOCK=null; MOCK_ACTIVE=false; TARGETED=false; TARGET_NOTE='';
+  if(typeof stopMockTimer==='function') stopMockTimer();
+  if(SL_POLL_TIMER){ clearTimeout(SL_POLL_TIMER); SL_POLL_TIMER=null; }
+  MODE='normal'; QSTATUS='undone'; CAT='全部'; VIEW='dash';
+}
 const wrongBank=()=>loadJ(LS_WRONG), srs=()=>loadJ(LS_SRS), favs=()=>loadJ(LS_FAV);
 const isMock=()=>MOCK_ACTIVE;
 const isEssay=()=>QS.length&&QS[0].type==='essay';
 let toastTimer;
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),TOAST_MS);}
-function fmtDate(ts){const d=new Date(ts);return `${d.getMonth()+1}月${d.getDate()}日`;}
 function todayStr(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function shuffleArr(a){const x=a.slice();for(let i=x.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[x[i],x[j]]=[x[j],x[i]];}return x;}
 
@@ -56,16 +80,16 @@ const fmtT=s=>{ if(s===undefined||s===null||isNaN(s)) return ''; return (+s).toF
 // 显示某题时调用：切题则把上一题累计时间存入 ANS_ACC，并重新起算当前题
 function noteShow(qid){
   const now=Date.now();
-  if(ANS_CUR===qid){ ANS_START=now; return; } // 同题重渲染：仅刷新起点，不重复累计
+  if(ANS_CUR===qid){ return; } // 同题重渲染：保持原起点，别把已用时清零
   if(ANS_CUR&&ANS_START){ ANS_ACC[ANS_CUR]=(ANS_ACC[ANS_CUR]||0)+(now-ANS_START); }
   ANS_CUR=qid; ANS_START=now;
 }
-// 提交某题答案时调用：把该题已累计 + 当前段用时写入 ANSWER_TIMES[qid]（秒，1 位小数）
+// 提交某题答案时调用：把该题已累计 + 当前段用时写入 ANSWER_TIMES[qid]（秒，上限 3600，1 位小数）
 function recTime(qid){
   const now=Date.now();
   let ms=ANS_ACC[qid]||0;
   if(ANS_CUR===qid&&ANS_START){ ms+=now-ANS_START; }
-  if(ms>0){ ANSWER_TIMES[qid]=Math.round(ms/100)/10; }
+  if(ms>0){ ANSWER_TIMES[qid]=Math.min(3600,Math.round(ms/100)/10); }
   delete ANS_ACC[qid];
   if(ANS_CUR===qid){ ANS_CUR=''; ANS_START=0; }
 }
@@ -96,6 +120,7 @@ function api(path,opts){
 function requireLogin(){ $('#loginmask').classList.remove('hide'); }
 function onAuthed(name){
   USERNAME=name; localStorage.setItem(LS_USER,name);
+  scopeKeys(); resetSessionState();
   $('#menu-name').textContent=name;
   const init=(USERNAME[0]||'汉').toUpperCase(); $('#avatar').textContent=init;
   $('#loginmask').classList.add('hide');
@@ -104,6 +129,7 @@ function onAuthed(name){
 function logout(){
   if(TOKEN){ fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN})}).catch(()=>{}); }
   TOKEN=''; USERNAME=''; localStorage.removeItem(LS_TOKEN); localStorage.removeItem(LS_USER);
+  resetSessionState(); scopeKeys();
   $('#subname').textContent=''; $('#menu-name').textContent='';
   requireLogin();
 }
@@ -146,7 +172,7 @@ function markGrade(qid,correct){
   if(correct){ delete wb[qid]; }
   else {
     const q=QS.find(x=>x.id===qid);
-    wb[qid]={stem:q?q.stem.slice(0,60):qid,module:q?q.module:'',subject:CUR,n:(wb[qid]&&wb[qid].n||0)+1,at:Date.now()};
+    wb[qid]={stem:q?q.stem.slice(0,60):qid,module:q?q.module:'',subject:q?q.subject:CUR,n:(wb[qid]&&wb[qid].n||0)+1,at:Date.now()};
   }
   saveJ(LS_WRONG,wb);
   const s=srs(), rec=s[qid]||{box:0,next:0};
@@ -154,7 +180,6 @@ function markGrade(qid,correct){
   else { rec.box=0; rec.next=Date.now(); }
   s[qid]=rec; saveJ(LS_SRS,s); updateBell();
 }
-function isDue(qid){ const r=srs()[qid]; return !r||r.box===0||r.next<=Date.now(); }
 function toggleFav(qid){
   const f=favs(), q=QS.find(x=>x.id===qid);
   if(f[qid]){ delete f[qid]; toast('已取消收藏'); }
@@ -209,8 +234,6 @@ function SUBJCOUNT(c){ return SUBJECTS.filter(s=>catOf(s)===c).length; }
 
 /* ---------- 仪表盘 ---------- */
 function dueCount(){ const s=srs(); return Object.values(s).filter(r=>r.box>0&&r.next<=Date.now()).length; }
-function overdueCount(){ const s=srs(); return Object.values(s).filter(r=>r.box>0&&r.next<Date.now()-86400000).length; }
-// 两处各调一次 srs()（每次读+解析 localStorage），合并为单次解析
 function dueOverCounts(){ const s=srs(); return [ Object.values(s).filter(r=>r.box>0&&r.next<=Date.now()).length, Object.values(s).filter(r=>r.box>0&&r.next<Date.now()-86400000).length ]; }
 function wrongCount(){ return Object.keys(wrongBank()).length; }
 function updateBell(){
@@ -293,8 +316,7 @@ function renderSubjGrid(){
     box.appendChild(b);
   });
 }
-function goCat(c){ CAT=c; showDashboard(); }
-function goDashboard(){ stopMockTimer(); MOCK_ACTIVE=false; MOCK=null; VIEW='dash'; $('#quiz').style.display='none'; $('#dashboard').style.display='block'; $('#foot').innerHTML=''; showDashboard(); }
+function goDashboard(){ stopMockTimer(); MOCK_ACTIVE=false; MOCK=null; VIEW='dash'; if(ANS_CUR&&ANS_START){ recTime(ANS_CUR); } $('#quiz').style.display='none'; $('#dashboard').style.display='block'; $('#foot').innerHTML=''; showDashboard(); }
 
 /* ---------- 进入题目 ---------- */
 function resumeLast(){
@@ -337,6 +359,7 @@ async function loadQuiz(post){
 }
 function applyFilter(qs){
   if(FILTER.module) qs=qs.filter(q=>q.module===FILTER.module);
+  if(FILTER.year) qs=qs.filter(q=>(q.year||'综合')===FILTER.year);
   if(FILTER.difficulty) qs=qs.filter(q=>q.difficulty>=FILTER.difficulty);
   return qs;
 }
@@ -561,12 +584,18 @@ window.addEventListener('keydown',e=>{
 async function apiCheck(payload){
   payload.date=todayStr();
   const r=await api('/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  return r.json();
+  let data={}; try{ data=await r.json(); }catch(e){}
+  return {status:r.status, data};
 }
 async function submitOne(qid,val){
   recTime(qid); // 记录本题作答用时
+  // 低：只上报本次作答的 qid 用时，别把整场累计表反复发送
+  const at={}; if(ANSWER_TIMES[qid]!==undefined) at[qid]=ANSWER_TIMES[qid];
   try{
-    const d=await apiCheck({answers:{[qid]:val}, answer_times:ANSWER_TIMES});
+    const res=await apiCheck({answers:{[qid]:val}, answer_times:at});
+    const d=res.data||{};
+    // 高2：非 2xx 明确提示，避免"静默失败"
+    if(res.status<200||res.status>=300){ toast((d.err||'提交失败')+'（'+res.status+'）'); render(); return; }
     if(d.results&&d.results[0]){ RESULTS[qid]=d.results[0]; if(d.results[0].correct!==undefined) markGrade(qid,d.results[0].correct); }
   }catch(e){ toast('网络错误，请重试'); }
   render();
@@ -805,7 +834,7 @@ async function showZhentiGroups(){
   const box=$('#ztresult');
   box.innerHTML='<div style="text-align:center;padding:16px;color:var(--mut);font-size:14px">加载中…</div>';
   let d;
-  try{ d=await (await api('/api/questions?subject=zhenti&exam='+encodeURIComponent(ZT.exam)+'&module='+encodeURIComponent(ZT.module)+'&year='+encodeURIComponent(ZT.year)+'&juan='+encodeURIComponent(ZT.juan))).json(); }
+  try{ d=await (await api('/api/questions?subject=zhenti&summary=0&exam='+encodeURIComponent(ZT.exam)+'&module='+encodeURIComponent(ZT.module)+'&year='+encodeURIComponent(ZT.year)+'&juan='+encodeURIComponent(ZT.juan))).json(); }
   catch(e){ box.innerHTML='<div style="text-align:center;padding:16px;color:var(--bad)">加载失败，请重试</div>'; return; }
   const qs=d.questions||[];
   // 按 subject+module+year 分组（每组=一个科目的一个模块·年份，整组可练习）
