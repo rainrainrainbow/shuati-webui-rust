@@ -485,7 +485,6 @@ function render(){
     if(r) h+=`<div class="feedback ok"><div class="fhead">参考答案 / 评分提示</div><div class="fans">${esc(r.reference||'（无）')}</div></div>`;
   }else{
     h+=`<div class="opts">${q.options.map((o,i)=>optHTML(q,o,i)).join('')}</div>`;
-    if(!isMock()&&q.type==='multi'&&ANSWERS[q.id]&&!RESULTS[q.id]) h+=`<button class="btn" id="multibtn" onclick="submitMulti('${q.id}')">确定提交</button>`;
     if(!isMock()&&RESULTS[q.id]) h+=feedbackHTML(q);
   }
   h+=`</div>
@@ -534,6 +533,9 @@ function bindOpts(q){
         let arr=ANSWERS[q.id]||[];
         arr=arr.includes(key)?arr.filter(x=>x!==key):[...arr,key];
         ANSWERS[q.id]=arr; lb.classList.toggle('sel',arr.includes(key));
+        // 修复：点选后实时启用/禁用"确定提交"按钮
+        const mb=$('#mb'); if(mb) mb.disabled=!arr.length;
+        const mbtn=$('#multibtn'); if(mbtn) mbtn.disabled=!arr.length;
         return;
       }
       ANSWERS[q.id]=key;
@@ -549,7 +551,8 @@ function bindEssay(q){
 function renderFoot(no){
   if(!QS.length){ $('#foot').innerHTML=''; return; }
   const q=QS[IDX], first=no<=1, last=no>=QS.length;
-  const graded=!!RESULTS[q.id], answered=ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!=='';
+  const graded=!!RESULTS[q.id];
+  const answered=q.type==='multi'?(Array.isArray(ANSWERS[q.id])&&ANSWERS[q.id].length>0):(ANSWERS[q.id]!==undefined&&ANSWERS[q.id]!=='');
   let left=`<button onclick="go(-1)" ${first?'disabled':''}>← 上一题</button>`;
   let right=`<button onclick="go(1)" ${last?'disabled':''}>下一题 →</button>`;
   let main='';
