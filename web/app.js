@@ -734,7 +734,8 @@ async function showStats(){
     body.innerHTML=`<div class="sheethead">📊 我的数据 <button class="closebtn" onclick="closeStats()">✕</button></div>
       <div class="statoverall">${d.overall||0}%</div>
       <div style="text-align:center;color:var(--mut);font-size:13px;margin-bottom:6px">还没有成绩记录，做题后按模块统计正确率</div>
-      <div class="statadvice">📕 错题本 ${wbN} 题 · 🔁 待复习 ${dueN} 题</div>${dailyHtml}`;
+      <div class="statadvice">📕 错题本 ${wbN} 题 · 🔁 待复习 ${dueN} 题</div>
+      <div class="statadvice"><button class="btn ghost" onclick="exportAll()">⬇️ 导出全部数据(JSON)</button></div>${dailyHtml}`;
     return;
   }
   const rows=mods.map(m=>{
@@ -751,9 +752,34 @@ async function showStats(){
     <div>${rows}</div>
     <div class="statadvice">${adv}</div>
     <div class="statadvice">📕 错题本 ${wbN} 题 · 🔁 待复习 ${dueN} 题 <button class="btn ghost" style="margin-top:6px" onclick="closeStats();MODE='wrong';loadQuiz()">去刷错题</button> <button class="btn ghost" style="margin-top:6px" onclick="closeStats();MODE='srs';loadQuiz()">去复习</button></div>
+    <div class="statadvice"><button class="btn ghost" onclick="exportAll()">⬇️ 导出全部数据(JSON)</button></div>
     ${dailyHtml}`;
 }
 function closeStats(){ $('#statmask').classList.remove('open'); }
+async function exportAll(){
+  let srv={};
+  try{ srv=await (await api('/api/export')).json(); }catch(e){ srv={error:String(e)}; }
+  const lj=k=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
+  const out={
+    schema:'shuati-export/v2',
+    exported_at:new Date().toISOString(),
+    user:localStorage.getItem(LS_USER)||'',
+    server:srv,
+    client:{
+      wrong:lj(LS_WRONG)||{},
+      srs:lj(LS_SRS)||{},
+      fav:lj(LS_FAV)||{},
+      last_subject:localStorage.getItem('shuati_last_subject')||'',
+      last_index:parseInt(localStorage.getItem('shuati_last_index')||'0')
+    }
+  };
+  const blob=new Blob([JSON.stringify(out,null,2)],{type:'application/json'});
+  const d=new Date(), ds=''+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob); a.download=`刷题记录_${out.user||'me'}_${ds}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+  toast('✓ 已导出全部数据');
+}
 
 /* ---------- 筛选弹层 ---------- */
 function openFilter(){
