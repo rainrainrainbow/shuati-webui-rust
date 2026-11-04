@@ -1215,6 +1215,37 @@ fn handle(mut request: tiny_http::Request, bank: &Bank, sessions: &Sessions) {
             };
             let _ = request.respond(json_response(200, &json!({"today": today, "days": days})));
         }
+        ("GET", "/api/export") => {
+            fn rd_raw(p: std::path::PathBuf, fallback: Value) -> Value {
+                std::fs::read_to_string(&p).ok()
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .unwrap_or(fallback)
+            }
+            let dir = user_dir(&username);
+            let mut mocks = serde_json::Map::new();
+            let mocks_dir = dir.join("mocks");
+            if let Ok(rd) = std::fs::read_dir(&mocks_dir) {
+                for e in rd.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if !name.ends_with(".json") || name == "active.json" { continue; }
+                    if let Ok(s) = std::fs::read_to_string(e.path()) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&s) { mocks.insert(name, v); }
+                    }
+                }
+            }
+            let data = json!({
+                "schema": "shuati-export/v1",
+                "exported_at": today_str(),
+                "user": username,
+                "daily": rd_raw(dir.join("daily.json"), json!({})),
+                "stats": rd_raw(dir.join("stats.json"), json!({})),
+                "answer_times": rd_raw(dir.join("answer_times.json"), json!({})),
+                "done": rd_raw(dir.join("done.json"), json!([])),
+                "reports": rd_raw(dir.join("reports.json"), json!([])),
+                "mocks": Value::Object(mocks),
+            });
+            let _ = request.respond(json_response(200, &data));
+        }
         ("POST", "/api/check") => {
             let body = body_or_413!(request);
             let payload: Value = serde_json::from_str(&body).unwrap_or(json!({}));
